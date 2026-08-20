@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AGY Memory Engine - Standalone Dynamic Memory Component
-SQLite FTS5 + Cached Model Resolution (Flash Low with auto-fallback)
+SQLite FTS5 + Multilingual Keywords + Typo/Fuzzy Search + Cached Model Resolution
 """
 
 import sys
@@ -11,6 +11,7 @@ import argparse
 import re
 import subprocess
 import json
+import difflib
 
 DB_PATH = os.path.expanduser("~/.gemini/memory.db")
 CACHE_PATH = os.path.expanduser("~/.gemini/memory_model_cache.txt")
@@ -23,7 +24,13 @@ STOPWORDS = {
     "und", "oder", "aber", "auch", "noch", "nur", "schon", "immer", "wieder", "heute", "gestern",
     "morgen", "mein", "meine", "meinen", "meiner", "meinem", "unser", "unsere", "unserem", "unseren",
     "lautet", "läuft", "geht", "bekommt", "macht", "gibt", "zeigt", "registriert", "geregelt",
-    "schau", "sag", "zeig", "prüfe", "checke", "bitte"
+    "schau", "sag", "zeig", "prüfe", "checke", "bitte",
+    # English & Latin stopwords / auxiliary verbs
+    "the", "and", "is", "are", "was", "were", "what", "where", "when", "how", "who", "why",
+    "which", "with", "from", "for", "about", "can", "could", "would", "should", "have", "has",
+    "had", "our", "my", "your", "his", "her", "their", "its", "show", "tell", "check", "find",
+    "that", "this", "then", "them", "they", "been", "into", "some", "more", "most", "such",
+    "est", "non", "sed", "et", "aut", "cum", "per"
 }
 
 TRIVIAL_PROMPT_RE = re.compile(
@@ -42,12 +49,13 @@ def get_db():
             id TEXT PRIMARY KEY,
             category TEXT,
             fact TEXT NOT NULL,
+            keywords TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            id, category, fact
+            id, category, fact, keywords
         );
     """)
     return conn
@@ -97,6 +105,17 @@ def is_trivial_prompt(text: str) -> bool:
         return True
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
+def get_all_vocabulary(cursor) -> set:
+    """Retrieve all indexed vocabulary tokens from memories for fast fuzzy/typo correction."""
+    cursor.execute("SELECT id, category, fact, keywords FROM memories")
+    rows = cursor.fetchall()
+    vocab = set()
+    for fid, cat, fact, kws in rows:
+        text = f"{fid} {cat or ''} {fact} {kws or ''}"
+        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
+        vocab.update(tokens)
+    return vocab
+
 def prefetch(query: str, limit: int = 3):
     if is_trivial_prompt(query):
         return
@@ -109,17 +128,49 @@ def prefetch(query: str, limit: int = 3):
     if not words:
         return
 
-    fts_query = " OR ".join(words)
+    # 1. Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
+    fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
+    fts_query = " OR ".join(fts_terms)
+
+    rows = []
     try:
         cursor.execute("""
             SELECT id, category, fact 
             FROM memories_fts 
             WHERE memories_fts MATCH ?
+            ORDER BY rank
             LIMIT ?;
         """, (fts_query, limit))
         rows = cursor.fetchall()
     except sqlite3.OperationalError:
         rows = []
+
+    # 2. Fuzzy / Typo Fallback if no exact/prefix match found
+    if not rows and any(len(w) >= 4 for w in words):
+        vocab = get_all_vocabulary(cursor)
+        corrected_words = []
+        for w in words:
+            if len(w) >= 4 and w not in vocab:
+                cutoff = 0.75 if len(w) >= 5 else 0.80
+                closest = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
+                if closest:
+                    corrected_words.append(closest[0])
+            elif w in vocab:
+                corrected_words.append(w)
+
+        if corrected_words:
+            fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
+            try:
+                cursor.execute("""
+                    SELECT id, category, fact 
+                    FROM memories_fts 
+                    WHERE memories_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?;
+                """, (fuzzy_fts, limit))
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                rows = []
 
     if rows:
         print("[🧠 Memory Context]")
@@ -127,7 +178,7 @@ def prefetch(query: str, limit: int = 3):
             prefix = f"({cat}) " if cat else ""
             print(f"• {prefix}{fact}")
 
-def upsert_fact(fact_id: str, category: str, fact: str):
+def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
     conn = get_db()
     cursor = conn.cursor()
     
@@ -135,14 +186,14 @@ def upsert_fact(fact_id: str, category: str, fact: str):
     cursor.execute("DELETE FROM memories_fts WHERE id = ?", (fact_id,))
     
     cursor.execute("""
-        INSERT INTO memories (id, category, fact, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-    """, (fact_id, category, fact))
+        INSERT INTO memories (id, category, fact, keywords, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (fact_id, category, fact, keywords))
     
     cursor.execute("""
-        INSERT INTO memories_fts (id, category, fact)
-        VALUES (?, ?, ?)
-    """, (fact_id, category, fact))
+        INSERT INTO memories_fts (id, category, fact, keywords)
+        VALUES (?, ?, ?, ?)
+    """, (fact_id, category, fact, keywords))
     
     conn.commit()
 
@@ -170,13 +221,20 @@ def sync_turn(user_prompt: str, assistant_response: str):
 {keys_context}
 IMPORTANT: If an existing key from the database list above matches the subject (e.g. 'travel.iceland2027'), USE THAT EXACT KEY ID to update it.
 
+Always provide multilingual search keywords (German, English, synonyms, alternative spellings, query terms) in the "keywords" field for each fact.
+
 User: {user_prompt}
 Assistant: {assistant_response}
 
 If NO new or updated persistent facts exist, output ONLY: NONE
-If facts exist, output ONLY a valid JSON array of objects with keys "id", "category", and "fact". Example:
+If facts exist, output ONLY a valid JSON array of objects with keys "id", "category", "fact", and "keywords". Example:
 [
-  {{"id": "travel.iceland2027", "category": "travel", "fact": "Island Reise 2027 wurde abgesagt wegen Geldmangel."}}
+  {{
+    "id": "travel.iceland2027",
+    "category": "travel",
+    "fact": "Island Reise 2027 wurde abgesagt wegen Budget.",
+    "keywords": "Iceland Island travel trip vacation holiday Reykjavik ferien urlaub"
+  }}
 ]
 """
     model_name = get_cached_model()
@@ -213,7 +271,7 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
         facts = json.loads(json_match.group(0))
         for item in facts:
             if "id" in item and "fact" in item:
-                upsert_fact(item["id"], item.get("category", "general"), item["fact"])
+                upsert_fact(item["id"], item.get("category", "general"), item["fact"], item.get("keywords", ""))
                 print(f"Memory synced via {model_name}: {item['id']}")
 
 def main():
@@ -231,6 +289,7 @@ def main():
     ad.add_argument("--id", type=str, required=True)
     ad.add_argument("--category", type=str, default="general")
     ad.add_argument("--fact", type=str, required=True)
+    ad.add_argument("--keywords", type=str, default="")
 
     subparsers.add_parser("list")
 
@@ -241,7 +300,7 @@ def main():
     elif args.command == "sync-turn":
         sync_turn(args.user, args.assistant)
     elif args.command == "add":
-        upsert_fact(args.id, args.category, args.fact)
+        upsert_fact(args.id, args.category, args.fact, args.keywords)
         print(f"Added memory {args.id}")
     elif args.command == "list":
         list_memories()
