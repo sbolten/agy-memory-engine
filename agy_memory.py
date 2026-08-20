@@ -14,7 +14,7 @@ import json
 
 DB_PATH = os.path.expanduser("~/.gemini/memory.db")
 CACHE_PATH = os.path.expanduser("~/.gemini/memory_model_cache.txt")
-DEFAULT_MODEL = "Gemini 3.7 Flash (Low)"
+DEFAULT_MODEL = "gemini-3.7-flash-high"
 
 STOPWORDS = {
     "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
@@ -71,23 +71,20 @@ def get_cached_model() -> str:
     return DEFAULT_MODEL
 
 def discover_and_cache_latest_flash_low_model() -> str:
-    """Scan agy models list for the newest Gemini Flash Low model and persist it to disk."""
+    """Scan agy models list for the newest Gemini Flash model and persist it to disk."""
     try:
         res = subprocess.run(["/home/ubuntu/.local/bin/agy", "models"], capture_output=True, text=True, timeout=10)
         lines = res.stdout.splitlines()
-        flash_low_models = []
         for line in lines:
-            match = re.search(r'(Gemini\s+[\d\.]+\s+Flash\s+\(Low\))', line, re.IGNORECASE)
-            if match:
-                flash_low_models.append(match.group(1))
-        if flash_low_models:
-            newest = flash_low_models[0]
-            try:
-                with open(CACHE_PATH, "w", encoding="utf-8") as f:
-                    f.write(newest)
-            except Exception:
-                pass
-            return newest
+            parts = line.strip().split()
+            if parts and ("flash" in parts[0].lower() or "gemini" in parts[0].lower()):
+                model_id = parts[0]
+                try:
+                    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+                        f.write(model_id)
+                except Exception:
+                    pass
+                return model_id
     except Exception:
         pass
     return DEFAULT_MODEL
@@ -188,7 +185,7 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
     # Attempt 1: Fast cached model execution with 90s timeout
     try:
         res = subprocess.run(
-            ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name],
+            ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
             capture_output=True, text=True, timeout=90
         )
         out = res.stdout.strip()
@@ -200,7 +197,7 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
         model_name = discover_and_cache_latest_flash_low_model()
         try:
             res = subprocess.run(
-                ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name],
+                ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=90
             )
             out = res.stdout.strip()
