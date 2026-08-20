@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AGY Memory Engine - Standalone Dynamic Memory Component
-SQLite FTS5 + Async Sync (via local llama.cpp / AGY fallback)
+SQLite FTS5 + Option A (Async AGY Subagent Sync via Gemini 3.7 Flash Low)
 """
 
 import sys
@@ -11,10 +11,8 @@ import argparse
 import re
 import subprocess
 import json
-import urllib.request
 
 DB_PATH = os.path.expanduser("~/.gemini/memory.db")
-LLAMA_URL = "http://100.82.144.89:8080/v1/chat/completions"
 
 STOPWORDS = {
     "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
@@ -51,6 +49,12 @@ def get_db():
         );
     """)
     return conn
+
+def get_existing_keys() -> list:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM memories")
+    return [row[0] for row in cursor.fetchall()]
 
 def is_trivial_prompt(text: str) -> bool:
     if not text or not text.strip():
@@ -126,53 +130,41 @@ def sync_turn(user_prompt: str, assistant_response: str):
     if is_trivial_prompt(user_prompt):
         return
 
-    system_prompt = "You are a factual memory extractor. Analyze the conversation. If persistent personal facts, preferences, server IPs, device IDs, or configuration changes were stated/updated/cancelled, extract them as a JSON array of objects with keys 'id', 'category', and 'fact'. If an existing fact is updated or cancelled, use the exact id (e.g. 'travel.iceland2027'). If NO facts exist, output NONE."
-    user_content = f"User: {user_prompt}\nAssistant: {assistant_response}"
+    existing_keys = get_existing_keys()
+    keys_context = f"Existing database keys: {json.dumps(existing_keys)}" if existing_keys else ""
 
-    out = ""
-    # 1. Try local llama.cpp first (< 1s, zero token cost)
+    prompt = f"""Analyze the conversation below. If persistent personal facts, preferences, server IPs, device IDs, or configuration changes were stated/updated/cancelled, extract them.
+{keys_context}
+IMPORTANT: If an existing key from the database list above matches the subject (e.g. 'travel.iceland2027'), USE THAT EXACT KEY ID to update it.
+
+User: {user_prompt}
+Assistant: {assistant_response}
+
+If NO new or updated persistent facts exist, output ONLY: NONE
+If facts exist, output ONLY a valid JSON array of objects with keys "id", "category", and "fact". Example:
+[
+  {{"id": "travel.iceland2027", "category": "travel", "fact": "Island Reise 2027 wurde abgesagt wegen Geldmangel."}}
+]
+"""
     try:
-        data = json.dumps({
-            "model": "qwen3.8-27b-iq3",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            "temperature": 0.1
-        }).encode("utf-8")
-        req = urllib.request.Request(LLAMA_URL, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as res:
-            res_json = json.loads(res.read().decode("utf-8"))
-            out = res_json["choices"][0]["message"]["content"].strip()
-    except Exception:
-        out = ""
-
-    # 2. Fallback to agy CLI if local server failed
-    if not out:
-        try:
-            prompt = f"{system_prompt}\n\n{user_content}"
-            res = subprocess.run(
-                ["/home/ubuntu/.local/bin/agy", "--print", prompt],
-                capture_output=True, text=True, timeout=25
-            )
-            out = res.stdout.strip()
-        except Exception as e:
-            sys.stderr.write(f"Sync failed: {e}\n")
+        # Strictly call agy CLI with Gemini 3.7 Flash (Low)
+        res = subprocess.run(
+            ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", "Gemini 3.7 Flash (Low)"],
+            capture_output=True, text=True, timeout=40
+        )
+        out = res.stdout.strip()
+        if not out or "NONE" in out:
             return
 
-    if not out or "NONE" in out:
-        return
-
-    json_match = re.search(r'\[.*\]', out, re.DOTALL)
-    if json_match:
-        try:
+        json_match = re.search(r'\[.*\]', out, re.DOTALL)
+        if json_match:
             facts = json.loads(json_match.group(0))
             for item in facts:
                 if "id" in item and "fact" in item:
                     upsert_fact(item["id"], item.get("category", "general"), item["fact"])
                     print(f"Memory synced: {item['id']}")
-        except Exception as e:
-            sys.stderr.write(f"JSON parse failed: {e}\n")
+    except Exception as e:
+        sys.stderr.write(f"Sync failed: {e}\n")
 
 def main():
     parser = argparse.ArgumentParser(description="AGY Standalone Memory Engine")
