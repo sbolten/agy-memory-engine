@@ -14,6 +14,16 @@ import json
 
 DB_PATH = os.path.expanduser("~/.gemini/memory.db")
 
+STOPWORDS = {
+    "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
+    "ist", "sind", "war", "waren", "wird", "werden", "habe", "hat", "haben", "auf", "mit", "von",
+    "aus", "für", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer", "einem", "einen",
+    "und", "oder", "aber", "auch", "noch", "nur", "schon", "immer", "wieder", "heute", "gestern",
+    "morgen", "mein", "meine", "meinen", "meiner", "meinem", "unser", "unsere", "unserem", "unseren",
+    "lautet", "läuft", "geht", "bekommt", "macht", "gibt", "zeigt", "registriert", "geregelt",
+    "schau", "sag", "zeig", "prüfe", "checke", "bitte"
+}
+
 TRIVIAL_PROMPT_RE = re.compile(
     r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
     r'hi|hey|hello|yo|sup|1|2|3|4|5|'
@@ -55,7 +65,8 @@ def prefetch(query: str, limit: int = 3):
     conn = get_db()
     cursor = conn.cursor()
 
-    words = [w for w in re.findall(r'\w+', query) if len(w) > 2]
+    raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
+    words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
     if not words:
         return
 
