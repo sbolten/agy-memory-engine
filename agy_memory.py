@@ -123,58 +123,79 @@ def prefetch(query: str, limit: int = 3):
     conn = get_db()
     cursor = conn.cursor()
 
+    # 1. Always load persistent preferences and rules (deterministic order for prompt cache efficiency)
+    cursor.execute("""
+        SELECT id, category, fact 
+        FROM memories 
+        WHERE category IN ('preference', 'rule')
+        ORDER BY id ASC
+    """)
+    pref_rows = cursor.fetchall()
+    seen_ids = {r[0] for r in pref_rows}
+
+    # 2. Extract search terms for dynamic context search
     raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
     words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
-    if not words:
-        return
 
-    # 1. Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
-    fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
-    fts_query = " OR ".join(fts_terms)
+    context_rows = []
+    if words:
+        # Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
+        fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
+        fts_query = " OR ".join(fts_terms)
 
-    rows = []
-    try:
-        cursor.execute("""
-            SELECT id, category, fact 
-            FROM memories_fts 
-            WHERE memories_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?;
-        """, (fts_query, limit))
-        rows = cursor.fetchall()
-    except sqlite3.OperationalError:
-        rows = []
+        try:
+            cursor.execute("""
+                SELECT id, category, fact 
+                FROM memories_fts 
+                WHERE memories_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?;
+            """, (fts_query, limit + len(seen_ids)))
+            for r in cursor.fetchall():
+                if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
+                    context_rows.append(r)
+                    seen_ids.add(r[0])
+                    if len(context_rows) >= limit:
+                        break
+        except sqlite3.OperationalError:
+            context_rows = []
 
-    # 2. Fuzzy / Typo Fallback if no exact/prefix match found
-    if not rows and any(len(w) >= 4 for w in words):
-        vocab = get_all_vocabulary(cursor)
-        corrected_words = []
-        for w in words:
-            if len(w) >= 4 and w not in vocab:
-                cutoff = 0.75 if len(w) >= 5 else 0.80
-                closest = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
-                if closest:
-                    corrected_words.append(closest[0])
-            elif w in vocab:
-                corrected_words.append(w)
+        # Fuzzy / Typo Fallback if no exact/prefix match found
+        if not context_rows and any(len(w) >= 4 for w in words):
+            vocab = get_all_vocabulary(cursor)
+            corrected_words = []
+            for w in words:
+                if len(w) >= 4 and w not in vocab:
+                    cutoff = 0.75 if len(w) >= 5 else 0.80
+                    closest = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
+                    if closest:
+                        corrected_words.append(closest[0])
+                elif w in vocab:
+                    corrected_words.append(w)
 
-        if corrected_words:
-            fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
-            try:
-                cursor.execute("""
-                    SELECT id, category, fact 
-                    FROM memories_fts 
-                    WHERE memories_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?;
-                """, (fuzzy_fts, limit))
-                rows = cursor.fetchall()
-            except sqlite3.OperationalError:
-                rows = []
+            if corrected_words:
+                fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
+                try:
+                    cursor.execute("""
+                        SELECT id, category, fact 
+                        FROM memories_fts 
+                        WHERE memories_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?;
+                    """, (fuzzy_fts, limit + len(seen_ids)))
+                    for r in cursor.fetchall():
+                        if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
+                            context_rows.append(r)
+                            seen_ids.add(r[0])
+                            if len(context_rows) >= limit:
+                                break
+                except sqlite3.OperationalError:
+                    pass
 
-    if rows:
+    all_output_rows = pref_rows + context_rows
+    if all_output_rows:
         print("[🧠 Memory Context]")
-        for _, cat, fact in rows:
+        for _, cat, fact in all_output_rows:
             prefix = f"({cat}) " if cat else ""
             print(f"• {prefix}{fact}")
 
