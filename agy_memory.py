@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AGY Memory Engine - Standalone Dynamic Memory Component
-SQLite FTS5 + Dynamic Model Resolution (Latest Gemini Flash Low)
+SQLite FTS5 + Cached Model Resolution (Flash Low with auto-fallback)
 """
 
 import sys
@@ -13,6 +13,8 @@ import subprocess
 import json
 
 DB_PATH = os.path.expanduser("~/.gemini/memory.db")
+CACHE_PATH = os.path.expanduser("~/.gemini/memory_model_cache.txt")
+DEFAULT_MODEL = "Gemini 3.7 Flash (Low)"
 
 STOPWORDS = {
     "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
@@ -56,8 +58,20 @@ def get_existing_keys() -> list:
     cursor.execute("SELECT id FROM memories")
     return [row[0] for row in cursor.fetchall()]
 
-def resolve_latest_flash_low_model() -> str:
-    """Dynamically query agy CLI for the newest available Gemini Flash (Low) model."""
+def get_cached_model() -> str:
+    """Read cached model from disk if available, otherwise return default."""
+    if os.path.exists(CACHE_PATH):
+        try:
+            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+                val = f.read().strip()
+                if val:
+                    return val
+        except Exception:
+            pass
+    return DEFAULT_MODEL
+
+def discover_and_cache_latest_flash_low_model() -> str:
+    """Scan agy models list for the newest Gemini Flash Low model and persist it to disk."""
     try:
         res = subprocess.run(["/home/ubuntu/.local/bin/agy", "models"], capture_output=True, text=True, timeout=10)
         lines = res.stdout.splitlines()
@@ -67,10 +81,16 @@ def resolve_latest_flash_low_model() -> str:
             if match:
                 flash_low_models.append(match.group(1))
         if flash_low_models:
-            return flash_low_models[0]
+            newest = flash_low_models[0]
+            try:
+                with open(CACHE_PATH, "w", encoding="utf-8") as f:
+                    f.write(newest)
+            except Exception:
+                pass
+            return newest
     except Exception:
         pass
-    return "Gemini 3.7 Flash (Low)"
+    return DEFAULT_MODEL
 
 def is_trivial_prompt(text: str) -> bool:
     if not text or not text.strip():
@@ -162,25 +182,42 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
   {{"id": "travel.iceland2027", "category": "travel", "fact": "Island Reise 2027 wurde abgesagt wegen Geldmangel."}}
 ]
 """
-    model_name = resolve_latest_flash_low_model()
+    model_name = get_cached_model()
+    out = ""
+
+    # Attempt 1: Fast cached model execution with 90s timeout
     try:
         res = subprocess.run(
             ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name],
-            capture_output=True, text=True, timeout=40
+            capture_output=True, text=True, timeout=90
         )
         out = res.stdout.strip()
-        if not out or "NONE" in out:
+    except Exception:
+        out = ""
+
+    # Attempt 2: If cached model failed/timed out, perform auto-discovery and retry
+    if not out:
+        model_name = discover_and_cache_latest_flash_low_model()
+        try:
+            res = subprocess.run(
+                ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name],
+                capture_output=True, text=True, timeout=90
+            )
+            out = res.stdout.strip()
+        except Exception as e:
+            sys.stderr.write(f"Sync failed: {e}\n")
             return
 
-        json_match = re.search(r'\[.*\]', out, re.DOTALL)
-        if json_match:
-            facts = json.loads(json_match.group(0))
-            for item in facts:
-                if "id" in item and "fact" in item:
-                    upsert_fact(item["id"], item.get("category", "general"), item["fact"])
-                    print(f"Memory synced via {model_name}: {item['id']}")
-    except Exception as e:
-        sys.stderr.write(f"Sync failed: {e}\n")
+    if not out or "NONE" in out:
+        return
+
+    json_match = re.search(r'\[.*\]', out, re.DOTALL)
+    if json_match:
+        facts = json.loads(json_match.group(0))
+        for item in facts:
+            if "id" in item and "fact" in item:
+                upsert_fact(item["id"], item.get("category", "general"), item["fact"])
+                print(f"Memory synced via {model_name}: {item['id']}")
 
 def main():
     parser = argparse.ArgumentParser(description="AGY Standalone Memory Engine")
