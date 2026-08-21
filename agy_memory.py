@@ -13,6 +13,7 @@ import re
 import subprocess
 import json
 import difflib
+from contextlib import contextmanager
 
 DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
@@ -43,7 +44,10 @@ TRIVIAL_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 
-def get_db():
+@contextmanager
+def db_session():
+    """Ensure directory exists and manage SQLite connection lifecycle cleanly."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("""
@@ -60,13 +64,35 @@ def get_db():
             id, category, fact, keywords
         );
     """)
-    return conn
+    # Setup automatic triggers to keep memories_fts perfectly synced without manual dual-writes
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts (id, category, fact, keywords)
+            VALUES (new.id, new.category, new.fact, new.keywords);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_memories_ad AFTER DELETE ON memories BEGIN
+            DELETE FROM memories_fts WHERE id = old.id;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_memories_au AFTER UPDATE ON memories BEGIN
+            DELETE FROM memories_fts WHERE id = old.id;
+            INSERT INTO memories_fts (id, category, fact, keywords)
+            VALUES (new.id, new.category, new.fact, new.keywords);
+        END;
+    """)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 def get_existing_keys() -> list:
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM memories")
-    return [row[0] for row in cursor.fetchall()]
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM memories")
+        return [row[0] for row in cursor.fetchall()]
 
 def get_cached_model() -> str:
     """Read cached model from disk if available, otherwise return default."""
@@ -90,6 +116,7 @@ def discover_and_cache_latest_flash_low_model() -> str:
             if parts and ("flash" in parts[0].lower() or "gemini" in parts[0].lower()):
                 model_id = parts[0]
                 try:
+                    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
                     with open(CACHE_PATH, "w", encoding="utf-8") as f:
                         f.write(model_id)
                 except Exception:
@@ -108,7 +135,7 @@ def is_trivial_prompt(text: str) -> bool:
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 def get_all_vocabulary(cursor) -> set:
-    """Retrieve all indexed vocabulary tokens from memories for fast fuzzy/typo correction."""
+    """Retrieve indexed vocabulary tokens from memories for fast fuzzy/typo correction."""
     cursor.execute("SELECT id, category, fact, keywords FROM memories")
     rows = cursor.fetchall()
     vocab = set()
@@ -122,116 +149,111 @@ def prefetch(query: str, limit: int = 3):
     if is_trivial_prompt(query):
         return
 
-    conn = get_db()
-    cursor = conn.cursor()
+    with db_session() as conn:
+        cursor = conn.cursor()
 
-    # 1. Always load persistent preferences and rules (deterministic order for prompt cache efficiency)
-    cursor.execute("""
-        SELECT id, category, fact 
-        FROM memories 
-        WHERE category IN ('preference', 'rule')
-        ORDER BY id ASC
-    """)
-    pref_rows = cursor.fetchall()
-    seen_ids = {r[0] for r in pref_rows}
+        # 1. Always load persistent preferences and rules (deterministic order for prompt cache efficiency)
+        cursor.execute("""
+            SELECT id, category, fact 
+            FROM memories 
+            WHERE category IN ('preference', 'rule')
+            ORDER BY id ASC
+        """)
+        pref_rows = cursor.fetchall()
+        seen_ids = {r[0] for r in pref_rows}
 
-    # 2. Extract search terms for dynamic context search
-    raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
-    words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
+        # 2. Extract search terms for dynamic context search
+        raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
+        words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
 
-    context_rows = []
-    if words:
-        # Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
-        fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
-        fts_query = " OR ".join(fts_terms)
+        context_rows = []
+        if words:
+            # Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
+            fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
+            fts_query = " OR ".join(fts_terms)
 
-        try:
-            cursor.execute("""
-                SELECT id, category, fact 
-                FROM memories_fts 
-                WHERE memories_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?;
-            """, (fts_query, limit + len(seen_ids)))
-            for r in cursor.fetchall():
-                if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
-                    context_rows.append(r)
-                    seen_ids.add(r[0])
-                    if len(context_rows) >= limit:
-                        break
-        except sqlite3.OperationalError:
-            context_rows = []
+            try:
+                cursor.execute("""
+                    SELECT id, category, fact 
+                    FROM memories_fts 
+                    WHERE memories_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?;
+                """, (fts_query, limit + len(seen_ids)))
+                for r in cursor.fetchall():
+                    if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
+                        context_rows.append(r)
+                        seen_ids.add(r[0])
+                        if len(context_rows) >= limit:
+                            break
+            except sqlite3.OperationalError:
+                context_rows = []
 
-        # Fuzzy / Typo Fallback if no exact/prefix match found
-        if not context_rows and any(len(w) >= 4 for w in words):
-            vocab = get_all_vocabulary(cursor)
-            corrected_words = []
-            for w in words:
-                if len(w) >= 4 and w not in vocab:
-                    cutoff = 0.75 if len(w) >= 5 else 0.80
-                    closest = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
-                    if closest:
-                        corrected_words.append(closest[0])
-                elif w in vocab:
-                    corrected_words.append(w)
+            # Fuzzy / Typo Fallback if no exact/prefix match found
+            if not context_rows and any(len(w) >= 4 for w in words):
+                vocab = get_all_vocabulary(cursor)
+                corrected_words = []
+                for w in words:
+                    if len(w) >= 4 and w not in vocab:
+                        cutoff = 0.75 if len(w) >= 5 else 0.80
+                        closest = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
+                        if closest:
+                            corrected_words.append(closest[0])
+                    elif w in vocab:
+                        corrected_words.append(w)
 
-            if corrected_words:
-                fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
-                try:
-                    cursor.execute("""
-                        SELECT id, category, fact 
-                        FROM memories_fts 
-                        WHERE memories_fts MATCH ?
-                        ORDER BY rank
-                        LIMIT ?;
-                    """, (fuzzy_fts, limit + len(seen_ids)))
-                    for r in cursor.fetchall():
-                        if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
-                            context_rows.append(r)
-                            seen_ids.add(r[0])
-                            if len(context_rows) >= limit:
-                                break
-                except sqlite3.OperationalError:
-                    pass
+                if corrected_words:
+                    fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
+                    try:
+                        cursor.execute("""
+                            SELECT id, category, fact 
+                            FROM memories_fts 
+                            WHERE memories_fts MATCH ?
+                            ORDER BY rank
+                            LIMIT ?;
+                        """, (fuzzy_fts, limit + len(seen_ids)))
+                        for r in cursor.fetchall():
+                            if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
+                                context_rows.append(r)
+                                seen_ids.add(r[0])
+                                if len(context_rows) >= limit:
+                                    break
+                    except sqlite3.OperationalError:
+                        pass
 
-    all_output_rows = pref_rows + context_rows
-    if all_output_rows:
-        print("[🧠 Memory Context]")
-        for _, cat, fact in all_output_rows:
-            prefix = f"({cat}) " if cat else ""
-            print(f"• {prefix}{fact}")
+        all_output_rows = pref_rows + context_rows
+        if all_output_rows:
+            print("[🧠 Memory Context]")
+            for _, cat, fact in all_output_rows:
+                prefix = f"({cat}) " if cat else ""
+                print(f"• {prefix}{fact}")
 
 def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("DELETE FROM memories WHERE id = ?", (fact_id,))
-    cursor.execute("DELETE FROM memories_fts WHERE id = ?", (fact_id,))
-    
-    cursor.execute("""
-        INSERT INTO memories (id, category, fact, keywords, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, (fact_id, category, fact, keywords))
-    
-    cursor.execute("""
-        INSERT INTO memories_fts (id, category, fact, keywords)
-        VALUES (?, ?, ?, ?)
-    """, (fact_id, category, fact, keywords))
-    
-    conn.commit()
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO memories (id, category, fact, keywords, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                category = excluded.category,
+                fact = excluded.fact,
+                keywords = excluded.keywords,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (fact_id, category, fact, keywords))
+        conn.commit()
 
 def list_memories():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, category, fact, updated_at FROM memories ORDER BY updated_at DESC")
-    rows = cursor.fetchall()
-    if not rows:
-        print("No memories stored yet.")
-        return
-    print(f"{'ID':<25} | {'CATEGORY':<12} | {'FACT'}")
-    print("-" * 75)
-    for fid, cat, fact, _ in rows:
-        print(f"{fid:<25} | {(cat or ''):<12} | {fact}")
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, category, fact, updated_at FROM memories ORDER BY updated_at DESC")
+        rows = cursor.fetchall()
+        if not rows:
+            print("No memories stored yet.")
+            return
+        print(f"{'ID':<25} | {'CATEGORY':<12} | {'FACT'}")
+        print("-" * 75)
+        for fid, cat, fact, _ in rows:
+            print(f"{fid:<25} | {(cat or ''):<12} | {fact}")
 
 def sync_turn(user_prompt: str, assistant_response: str):
     if is_trivial_prompt(user_prompt):
@@ -291,11 +313,17 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
 
     json_match = re.search(r'\[.*\]', out, re.DOTALL)
     if json_match:
-        facts = json.loads(json_match.group(0))
-        for item in facts:
-            if "id" in item and "fact" in item:
-                upsert_fact(item["id"], item.get("category", "general"), item["fact"], item.get("keywords", ""))
-                print(f"Memory synced via {model_name}: {item['id']}")
+        try:
+            facts = json.loads(json_match.group(0))
+            if isinstance(facts, list):
+                for item in facts:
+                    if isinstance(item, dict) and "id" in item and "fact" in item:
+                        upsert_fact(item["id"], item.get("category", "general"), item["fact"], item.get("keywords", ""))
+                        print(f"Memory synced via {model_name}: {item['id']}")
+        except json.JSONDecodeError as e:
+            sys.stderr.write(f"JSON decode error during memory sync: {e}\n")
+        except Exception as e:
+            sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
 def main():
     parser = argparse.ArgumentParser(description="AGY Standalone Memory Engine")
