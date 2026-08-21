@@ -45,17 +45,51 @@ Pass user input and assistant response to extract and persist new facts asynchro
 python3 agy_memory.py sync-turn --user "Remember that our staging server IP changed to 192.168.1.150" --assistant "Understood, updated the staging IP."
 ```
 
-### 4. Compaction, Deduplication & Maintenance
-Audit knowledge base, consolidate redundant entries, resolve contradictions, and optimize SQLite storage:
+### 4. Compaction, Deduplication & Knowledge Maintenance (`compact`)
+
+Over time, continuous background learning (`sync-turn`) can accumulate overlapping facts, fragmented notes, or outdated states. The `compact` command serves as an automated knowledge curator.
+
+#### 🎯 Why Use Memory Compaction?
+- **Redundancy Elimination:** Merges scattered mentions of the same subject into single, dense canonical entries.
+- **Contradiction & Drift Resolution:** Replaces superseded states (e.g. updated server IPs, new medication doses, changed configurations) while preserving current accuracy.
+- **Zero Data Loss Guarantee:** Retains 100% of concrete details (exact dates, IDs, serial numbers, credentials, URLs).
+- **Keyword Enrichment:** Generates fresh, multi-lingual search keywords (DE/EN synonyms and misspellings) to maximize FTS5 retrieval recall.
+- **Database Optimization:** Rebuilds the FTS5 virtual table index and runs SQLite `VACUUM` to eliminate fragmentation.
+
 ```bash
-# Dry-run audit (preview changes without modifying database)
+# 1. Dry-run audit: Analyzes memories and displays a detailed diff/preview without writing changes
 python3 agy_memory.py compact
 
-# Apply consolidation with automatic timestamped backup and SQLite VACUUM
+# 2. Apply: Creates a timestamped backup in ~/.gemini/archive/, applies consolidations, and vacuums SQLite
 python3 agy_memory.py compact --apply
 ```
 
-For automated multi-user nightly maintenance, run `scripts/agy-memory-compact-all.sh` via cron (e.g. in `/etc/cron.d/agy-memory-compact`).
+---
+
+## 👥 Multi-User Nightly Maintenance (`scripts/agy-memory-compact-all.sh`)
+
+On multi-user servers where multiple local users (e.g. family members or team members) run independent Antigravity instances, memory databases are isolated under each user's home directory (`~/.gemini/memory.db`).
+
+The script [`scripts/agy-memory-compact-all.sh`](scripts/agy-memory-compact-all.sh) automates maintenance across all users:
+
+### How it works:
+1. **Auto-Discovery:** Scans `/home/*` for active user accounts with an existing `~/.gemini/memory.db`.
+2. **Permission Isolation:** Executes the compaction strictly within each user's own permission boundary (`su - $username`), ensuring backups and DB files retain correct ownership (`0600`/`0700`).
+3. **Plug & Play for New Users:** Any newly created Linux user with an initialized memory database is automatically included without requiring manual configuration.
+
+### Deployment via System Cron:
+Create `/etc/cron.d/agy-memory-compact`:
+
+```cron
+# /etc/cron.d/agy-memory-compact
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Zurich
+
+# Run nightly at 04:00 AM before daily system backups
+0 4 * * * root /usr/local/bin/agy-memory-compact-all.sh >/dev/null 2>&1
+```
+
 
 
 ---
