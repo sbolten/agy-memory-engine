@@ -8,6 +8,78 @@ Inspired by Hermes Agent's 3-pillar memory architecture, using SQLite FTS5 for u
 
 ---
 
+## 🧩 The Big Picture: Autonomous Agent Stack (AGY + Telegram + Memory)
+
+`agy-memory-engine` is designed as the persistent semantic backbone of a 24/7 personal autonomous agent stack:
+
+```text
+                  ┌────────────────────────────────────────┐
+                  │          User on Telegram UI           │
+                  │   ("Deploy staging update on Beelink") │
+                  └──────────────────┬─────────────────────┘
+                                     │
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │    Telegram Gateway / Sidecar     │
+                   └───────┬───────────────────▲───────┘
+                           │                   │
+               1. Pre-fetch│                   │ 5. Telegram
+                 (< 2ms)   │                   │    Response
+                           ▼                   │
+            ┌─────────────────────────────┐    │
+            │   AGY Memory Engine (FTS5)  │    │
+            │   - Staging IP: 192.168.1.50│    │
+            │   - SSH Port: 2222          │    │
+            │   - User Prefs & Hardware   │    │
+            └──────────────┬──────────────┘    │
+                           │ 2. Injected       │
+                           │    Ephemeral      │
+                           │    Context        │
+                           ▼                   │
+            ┌──────────────────────────────────┴──┐
+            │   Google Antigravity CLI (`agy`)    │
+            │   - Autonomous Execution            │
+            │   - Tool Calls / Skills / MCP       │
+            │   - Multi-Turn Reasoning            │
+            └──────────────┬──────────────────────┘
+                           │
+                           │ 3. Output Stream
+                           ▼
+                    ┌──────────────┐
+                    │ Async Worker │ 4. Background `sync-turn`
+                    │  (no delay)  │───► Extracts new facts & persists
+                    └──────────────┘     into `memory.db` without blocking UI
+```
+
+---
+
+## 🏛️ The 3-Pillar Memory Philosophy
+
+To keep the agent razor-sharp across thousands of daily turns without prompt bloat or massive token bills, memory is partitioned into 3 distinct layers:
+
+| Pillar | Type | Scope & Lifecycle | Storage Mechanism |
+|---|---|---|---|
+| **Pillar 1** | **Episodic / Working Context** | Transient day-to-day conversation, ephemeral tasks, session scratchpad. Dies after task completion or referenced via logs. | In-flight context window, Google Tasks, Transcripts |
+| **Pillar 2** | **Semantic / Long-Term Facts** | Deterministic facts, server IPs, personal master data, credentials metadata, hardware specs, family profiles. Permanent & instantly searchable. | **`~/.gemini/memory.db` (SQLite FTS5 + BM25)** |
+| **Pillar 3** | **Procedural / Skills & Rules** | *How* to execute tasks: API definitions, security rules, playbooks, formatting standards. | System Rules (`user_global`), AGY Skills |
+
+---
+
+## 💡 Why AGY Memory Engine? (Motivation & Design Decisions)
+
+Most LLM memory solutions today suffer from two extremes:
+1. **Vector DB / Semantic RAG bloat:** Embedding models, heavy C++/native dependencies (Chroma, FAISS, PyTorch), slow cold-starts, vector drift, and poor keyword/exact match (e.g. failing to cleanly recall exact IP addresses, port numbers, serials, or drug doses).
+2. **Context-stuffing everything:** Relying on huge 1M–2M context windows adds massive latency, increases token costs exponentially, and dilutes the agent's attention on long-running multi-turn sessions.
+
+### Key Insights:
+- **Exact & Fast > Fuzzy Vectors for Core Facts:** When an agent needs your timezone, server IPs, hardware specs, or personal preferences, SQLite FTS5 with BM25 ranking delivers deterministic, exact results in **< 2ms** with **0 MB extra RAM**.
+- **Telegram UX requires sub-second response starts:** SQLite FTS5 pre-fetches relevant facts locally via standard library Python before the LLM begins streaming.
+- **Zero External Dependencies:** Built entirely on Python’s standard library (`sqlite3`, `re`, `difflib`). Runs anywhere without `pip install`, wheel compilation issues, or Docker container overhead.
+- **Dynamic Pre-fetching without Prompt Bloat:** Instead of dumping an entire personal wiki into the system prompt, `agy-memory` extracts key entities, fetches only the 3–5 relevant facts, and injects them as ephemeral context.
+- **Autonomous Background Learning & Compaction:** Ingesting new memories is decoupled from the user interaction (`sync-turn`). Over time, automated nightly compaction (`compact --apply`) deduplicates, resolves contradictions, and prunes stale data across all user accounts.
+
+---
+
 ## 🌟 Key Features
 
 - **⚡ Blazing Fast Retrieval (<2ms):** Uses native SQLite FTS5 full-text indexing with BM25 ranking.
