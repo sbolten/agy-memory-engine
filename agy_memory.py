@@ -325,6 +325,182 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
+def compact_memories(apply_changes: bool = False):
+    """
+    Audit all facts in memory.db for redundancies, overlapping information, and contradictions.
+    Creates a timestamped backup before applying any modifications.
+    Consolidates facts without data loss, updates SQLite FTS, and runs VACUUM.
+    """
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, category, fact, keywords FROM memories ORDER BY category, id")
+        rows = cursor.fetchall()
+
+    if not rows:
+        print("No memories to compact.")
+        return
+
+    current_memories = [
+        {"id": r[0], "category": r[1] or "general", "fact": r[2], "keywords": r[3] or ""}
+        for r in rows
+    ]
+
+    print(f"Loaded {len(current_memories)} memories for audit & compaction...")
+
+    prompt = f"""You are an expert data curator and fact-consolidation engine.
+Analyze the following JSON list of persistent memories extracted from a user's SQLite knowledge base.
+
+Goal:
+1. Detect duplicate or semantically redundant entries (e.g. facts mentioned in multiple places or partial duplicates).
+2. Detect contradictions or outdated states (if one fact supersedes another, retain the most current, accurate, comprehensive information).
+3. Merge overlapping facts into clean, atomic, consolidated entries WITHOUT ANY INFORMATION LOSS.
+4. Ensure hierarchical and consistent ID keys (e.g., 'user.profile', 'infra.oci', 'finance.etf').
+5. Generate comprehensive multilingual keywords (German/English synonyms, misspellings, search terms) for each consolidated item.
+6. Preserve all existing accurate details (names, dates, IDs, IPs, serial numbers, account info, specific parameters). DO NOT DROP ANY SPECIFIC FACTS OR DETAILS.
+
+Input Memories:
+{json.dumps(current_memories, ensure_ascii=False, indent=2)}
+
+Output Format:
+Return ONLY a valid JSON array of consolidated memory objects. Each object must have:
+- "id": string (the unique canonical key)
+- "category": string
+- "fact": string (clear, dense, consolidated factual summary)
+- "keywords": string (space-separated search terms/synonyms)
+
+If no consolidation or deduplication is necessary and the current list is already optimal, return the exact same items.
+Output JSON only:
+"""
+
+    model_name = get_cached_model()
+    out = ""
+
+    print(f"Analyzing knowledge base with {model_name}...")
+    try:
+        res = subprocess.run(
+            [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+            capture_output=True, text=True, timeout=120
+        )
+        out = res.stdout.strip()
+    except Exception:
+        out = ""
+
+    if not out:
+        model_name = discover_and_cache_latest_flash_low_model()
+        try:
+            res = subprocess.run(
+                [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+                capture_output=True, text=True, timeout=120
+            )
+            out = res.stdout.strip()
+        except Exception as e:
+            sys.stderr.write(f"Compaction analysis failed: {e}\n")
+            return
+
+    json_match = re.search(r'\[.*\]', out, re.DOTALL)
+    if not json_match:
+        print("Compaction error: Model did not return a valid JSON array.")
+        return
+
+    try:
+        compacted = json.loads(json_match.group(0))
+    except Exception as e:
+        print(f"JSON parsing error: {e}")
+        return
+
+    if not isinstance(compacted, list) or len(compacted) == 0:
+        print("Compaction error: Empty result.")
+        return
+
+    # Diff analysis
+    old_by_id = {m["id"]: m for m in current_memories}
+    new_by_id = {m["id"]: m for m in compacted}
+
+    added = [m for m in compacted if m["id"] not in old_by_id]
+    removed = [m for m in current_memories if m["id"] not in new_by_id]
+    modified = [
+        m for m in compacted
+        if m["id"] in old_by_id and (
+            old_by_id[m["id"]]["fact"] != m["fact"] or
+            old_by_id[m["id"]]["category"] != m["category"]
+        )
+    ]
+    unchanged = [
+        m for m in compacted
+        if m["id"] in old_by_id and (
+            old_by_id[m["id"]]["fact"] == m["fact"] and
+            old_by_id[m["id"]]["category"] == m["category"]
+        )
+    ]
+
+    print("\n" + "=" * 60)
+    print("COMPACTION AUDIT REPORT")
+    print("=" * 60)
+    print(f"Original entries:  {len(current_memories)}")
+    print(f"Compacted entries: {len(compacted)}")
+    print(f"Unchanged:         {len(unchanged)}")
+    print(f"Modified/Merged:   {len(modified)}")
+    print(f"New keys:          {len(added)}")
+    print(f"Removed/Merged:    {len(removed)}")
+
+    if modified:
+        print("\n--- MODIFIED / CONSOLIDATED ENTRIES ---")
+        for m in modified:
+            old = old_by_id[m["id"]]
+            print(f"\nKey: [{m['id']}] (Category: {m['category']})")
+            print(f"  [-] Old: {old['fact']}")
+            print(f"  [+] New: {m['fact']}")
+
+    if removed:
+        print("\n--- MERGED / REMOVED KEYS ---")
+        for r in removed:
+            print(f"  [-] {r['id']}: {r['fact']}")
+
+    if added:
+        print("\n--- NEW KEYS ---")
+        for a in added:
+            print(f"  [+] {a['id']}: {a['fact']}")
+
+    if not apply_changes:
+        print("\n" + "=" * 60)
+        print("[DRY-RUN] No changes were written to database.")
+        print("To apply changes, run with '--apply'.")
+        print("=" * 60)
+        return
+
+    # Backup before applying
+    backup_dir = os.path.expanduser("~/.gemini/archive")
+    os.makedirs(backup_dir, exist_ok=True)
+    import datetime
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_file = os.path.join(backup_dir, f"memory_db_backup_{ts}.bak")
+    shutil.copy2(DB_PATH, backup_file)
+    print(f"\n[BACKUP] Snapshot created: {backup_file}")
+
+    with db_session() as conn:
+        cursor = conn.cursor()
+        # Atomic replace in transaction
+        cursor.execute("DELETE FROM memories;")
+        for item in compacted:
+            cursor.execute("""
+                INSERT INTO memories (id, category, fact, keywords, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP);
+            """, (item["id"], item.get("category", "general"), item["fact"], item.get("keywords", "")))
+        conn.commit()
+
+        # Optimize DB and rebuild FTS
+        print("[OPTIMIZE] Running VACUUM and FTS5 rebuild...")
+        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
+        conn.commit()
+
+    # VACUUM outside transaction
+    conn_raw = sqlite3.connect(DB_PATH)
+    conn_raw.execute("VACUUM;")
+    conn_raw.close()
+
+    print("[SUCCESS] Memory database successfully compacted, deduplicated, and vacuumed!")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AGY Standalone Memory Engine")
     subparsers = parser.add_subparsers(dest="command")
@@ -342,6 +518,9 @@ def main():
     ad.add_argument("--fact", type=str, required=True)
     ad.add_argument("--keywords", type=str, default="")
 
+    cp = subparsers.add_parser("compact")
+    cp.add_argument("--apply", action="store_true", help="Apply compaction changes (default: dry-run)")
+
     subparsers.add_parser("list")
 
     args = parser.parse_args()
@@ -353,6 +532,8 @@ def main():
     elif args.command == "add":
         upsert_fact(args.id, args.category, args.fact, args.keywords)
         print(f"Added memory {args.id}")
+    elif args.command == "compact":
+        compact_memories(apply_changes=args.apply)
     elif args.command == "list":
         list_memories()
     else:
@@ -360,3 +541,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
