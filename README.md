@@ -15,7 +15,7 @@ Inspired by Hermes Agent's 3-pillar memory architecture, using SQLite FTS5 for u
 ```text
                   ┌────────────────────────────────────────┐
                   │          User on Telegram UI           │
-                  │   ("Deploy staging update on Beelink") │
+                  │   ("Deploy staging update on prod-server") │
                   └──────────────────┬─────────────────────┘
                                      │
                                      ▼
@@ -102,13 +102,13 @@ Most LLM memory solutions today suffer from two extremes:
 ### 2. Manual Fact Management (CLI)
 ```bash
 # Add a fact
-python3 agy_memory.py add --id "user.timezone" --category "preference" --fact "Timezone is Europe/Zurich (CET/CEST)" --keywords "timezone zeit zeitzone zurich schweiz"
+python3 agy_memory.py add --id "user.timezone" --category "preference" --fact "Timezone is UTC (CET/CEST)" --keywords "timezone zeit zeitzone time"
 
 # List stored memories
 python3 agy_memory.py list
 
 # Query / Prefetch context for an upcoming prompt
-python3 agy_memory.py prefetch "Wann beginnt das Meeting in Zürich?"
+python3 agy_memory.py prefetch "Wann beginnt das nächste Meeting?"
 ```
 
 ### 3. Dynamic Conversation Turn Syncing
@@ -156,7 +156,7 @@ Create `/etc/cron.d/agy-memory-compact`:
 # /etc/cron.d/agy-memory-compact
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-CRON_TZ=Europe/Zurich
+CRON_TZ=UTC
 
 # Run nightly at 04:00 AM before daily system backups
 0 4 * * * root /usr/local/bin/agy-memory-compact-all.sh >/dev/null 2>&1
