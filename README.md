@@ -45,6 +45,19 @@ Pass user input and assistant response to extract and persist new facts asynchro
 python3 agy_memory.py sync-turn --user "Remember that our staging server IP changed to 192.168.1.150" --assistant "Understood, updated the staging IP."
 ```
 
+### 4. Compaction, Deduplication & Maintenance
+Audit knowledge base, consolidate redundant entries, resolve contradictions, and optimize SQLite storage:
+```bash
+# Dry-run audit (preview changes without modifying database)
+python3 agy_memory.py compact
+
+# Apply consolidation with automatic timestamped backup and SQLite VACUUM
+python3 agy_memory.py compact --apply
+```
+
+For automated multi-user nightly maintenance, run `scripts/agy-memory-compact-all.sh` via cron (e.g. in `/etc/cron.d/agy-memory-compact`).
+
+
 ---
 
 ## 🔌 Model Context Protocol (MCP) Setup
