@@ -6,6 +6,7 @@ SQLite FTS5 + Multilingual Keywords + Typo/Fuzzy Search + Cached Model Resolutio
 
 import sys
 import os
+import shutil
 import sqlite3
 import argparse
 import re
@@ -13,9 +14,10 @@ import subprocess
 import json
 import difflib
 
-DB_PATH = os.path.expanduser("~/.gemini/memory.db")
-CACHE_PATH = os.path.expanduser("~/.gemini/memory_model_cache.txt")
+DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
+CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
 DEFAULT_MODEL = "gemini-3.7-flash-high"
+AGY_BIN = os.environ.get("AGY_BIN") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
 
 STOPWORDS = {
     "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
@@ -81,7 +83,7 @@ def get_cached_model() -> str:
 def discover_and_cache_latest_flash_low_model() -> str:
     """Scan agy models list for the newest Gemini Flash model and persist it to disk."""
     try:
-        res = subprocess.run(["/home/ubuntu/.local/bin/agy", "models"], capture_output=True, text=True, timeout=10)
+        res = subprocess.run([AGY_BIN, "models"], capture_output=True, text=True, timeout=10)
         lines = res.stdout.splitlines()
         for line in lines:
             parts = line.strip().split()
@@ -264,7 +266,7 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
     # Attempt 1: Fast cached model execution with 90s timeout
     try:
         res = subprocess.run(
-            ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+            [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
             capture_output=True, text=True, timeout=90
         )
         out = res.stdout.strip()
@@ -276,7 +278,7 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
         model_name = discover_and_cache_latest_flash_low_model()
         try:
             res = subprocess.run(
-                ["/home/ubuntu/.local/bin/agy", "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+                [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=90
             )
             out = res.stdout.strip()

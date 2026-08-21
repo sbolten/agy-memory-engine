@@ -9,7 +9,7 @@ import json
 import sqlite3
 import os
 
-DB_PATH = os.path.expanduser("~/.gemini/memory.db")
+DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
