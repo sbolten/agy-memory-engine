@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-AGY Memory Engine - Standalone Dynamic Memory Component
-SQLite FTS5 + Multilingual Keywords + Typo/Fuzzy Search + Cached Model Resolution
+AGY Memory Engine - Multi-Layer Cognitive Memory Component
+- Layer 1: Semantic Fact-Store (SQLite FTS5: IPs, configs, hardware, master data)
+- Layer 2: Narrative & Episodic Store (Themen-Dossiers, Chroniken, Beziehungsdynamiken, Verläufe)
+- Layer 3: Experiential & Learnings Store (Erkenntnisse, Heuristiken, Urteile, Haltungen)
 """
 
 import sys
@@ -27,7 +29,7 @@ STOPWORDS = {
     "und", "oder", "aber", "auch", "noch", "nur", "schon", "immer", "wieder", "heute", "gestern",
     "morgen", "mein", "meine", "meinen", "meiner", "meinem", "unser", "unsere", "unserem", "unseren",
     "lautet", "läuft", "geht", "bekommt", "macht", "gibt", "zeigt", "registriert", "geregelt",
-    "schau", "sag", "zeig", "prüfe", "checke", "bitte",
+    "schau", "sag", "zeig", "prüfe", "checke", "bitte", "mal", "uns", "unsere", "ihr", "ihre",
     # English & Latin stopwords / auxiliary verbs
     "the", "and", "is", "are", "was", "were", "what", "where", "when", "how", "who", "why",
     "which", "with", "from", "for", "about", "can", "could", "would", "should", "have", "has",
@@ -50,6 +52,8 @@ def db_session():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
+
+    # 1. Memories Table (Atomic Facts)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
@@ -64,7 +68,6 @@ def db_session():
             id, category, fact, keywords
         );
     """)
-    # Setup automatic triggers to keep memories_fts perfectly synced without manual dual-writes
     conn.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
             INSERT INTO memories_fts (id, category, fact, keywords)
@@ -83,16 +86,100 @@ def db_session():
             VALUES (new.id, new.category, new.fact, new.keywords);
         END;
     """)
+
+    # 2. Episodes Table (Narrative Chronicles, Context, Stances)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS episodes (
+            id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            title TEXT NOT NULL,
+            period TEXT,
+            status TEXT DEFAULT 'active',
+            narrative TEXT NOT NULL,
+            entities TEXT,
+            stance TEXT,
+            keywords TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+            id, topic, title, narrative, entities, stance, keywords
+        );
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_episodes_ai AFTER INSERT ON episodes BEGIN
+            INSERT INTO episodes_fts (id, topic, title, narrative, entities, stance, keywords)
+            VALUES (new.id, new.topic, new.title, new.narrative, new.entities, new.stance, new.keywords);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_episodes_ad AFTER DELETE ON episodes BEGIN
+            DELETE FROM episodes_fts WHERE id = old.id;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_episodes_au AFTER UPDATE ON episodes BEGIN
+            DELETE FROM episodes_fts WHERE id = old.id;
+            INSERT INTO episodes_fts (id, topic, title, narrative, entities, stance, keywords)
+            VALUES (new.id, new.topic, new.title, new.narrative, new.entities, new.stance, new.keywords);
+        END;
+    """)
+
+    # 3. Learnings Table (Experiential Heuristics, Practical Insights)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS learnings (
+            id TEXT PRIMARY KEY,
+            category TEXT,
+            insight TEXT NOT NULL,
+            context TEXT,
+            keywords TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
+            id, category, insight, context, keywords
+        );
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_learnings_ai AFTER INSERT ON learnings BEGIN
+            INSERT INTO learnings_fts (id, category, insight, context, keywords)
+            VALUES (new.id, new.category, new.insight, new.context, new.keywords);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_learnings_ad AFTER DELETE ON learnings BEGIN
+            DELETE FROM learnings_fts WHERE id = old.id;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_learnings_au AFTER UPDATE ON learnings BEGIN
+            DELETE FROM learnings_fts WHERE id = old.id;
+            INSERT INTO learnings_fts (id, category, insight, context, keywords)
+            VALUES (new.id, new.category, new.insight, new.context, new.keywords);
+        END;
+    """)
+
     try:
         yield conn
     finally:
         conn.close()
 
-def get_existing_keys() -> list:
+def get_existing_database_inventory() -> dict:
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM memories")
-        return [row[0] for row in cursor.fetchall()]
+        fact_keys = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT id, title, topic FROM episodes")
+        episode_keys = [{"id": row[0], "title": row[1], "topic": row[2]} for row in cursor.fetchall()]
+        cursor.execute("SELECT id, category FROM learnings")
+        learning_keys = [{"id": row[0], "category": row[1]} for row in cursor.fetchall()]
+        return {
+            "fact_keys": fact_keys,
+            "episodes": episode_keys,
+            "learnings": learning_keys
+        }
 
 def get_cached_model() -> str:
     """Read cached model from disk if available, otherwise return default."""
@@ -135,62 +222,105 @@ def is_trivial_prompt(text: str) -> bool:
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 def get_all_vocabulary(cursor) -> set:
-    """Retrieve indexed vocabulary tokens from memories for fast fuzzy/typo correction."""
-    cursor.execute("SELECT id, category, fact, keywords FROM memories")
-    rows = cursor.fetchall()
+    """Retrieve indexed vocabulary tokens from all tables for fast fuzzy/typo correction."""
     vocab = set()
-    for fid, cat, fact, kws in rows:
-        text = f"{fid} {cat or ''} {fact} {kws or ''}"
+    cursor.execute("SELECT id, category, fact, keywords FROM memories")
+    for fid, cat, fact, kws in cursor.fetchall():
+        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', f"{fid} {cat or ''} {fact} {kws or ''}".lower())
+        vocab.update(tokens)
+    
+    cursor.execute("SELECT id, topic, title, narrative, entities, stance, keywords FROM episodes")
+    for row in cursor.fetchall():
+        text = " ".join([str(x) for x in row if x])
         tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
         vocab.update(tokens)
+
+    cursor.execute("SELECT id, category, insight, context, keywords FROM learnings")
+    for row in cursor.fetchall():
+        text = " ".join([str(x) for x in row if x])
+        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
+        vocab.update(tokens)
+
     return vocab
 
-def prefetch(query: str, limit: int = 3):
+def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_learnings: int = 2):
     if is_trivial_prompt(query):
         return
 
     with db_session() as conn:
         cursor = conn.cursor()
 
-        # 1. Always load persistent preferences and rules (deterministic order for prompt cache efficiency)
+        # 1. Always load persistent preferences and rules
         cursor.execute("""
             SELECT id, category, fact 
             FROM memories 
-            WHERE category IN ('preference', 'rule')
+            WHERE category IN ('preference', 'rule', 'preferences')
             ORDER BY id ASC
         """)
         pref_rows = cursor.fetchall()
-        seen_ids = {r[0] for r in pref_rows}
+        seen_fact_ids = {r[0] for r in pref_rows}
 
-        # 2. Extract search terms for dynamic context search
+        # 2. Extract search terms
         raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
         words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
 
-        context_rows = []
+        fact_rows = []
+        episode_rows = []
+        learning_rows = []
+
         if words:
-            # Direct FTS Query: Prefix wildcard for words >= 4 chars, exact match for short <= 3 char words
             fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
             fts_query = " OR ".join(fts_terms)
 
+            # Query Memories FTS
             try:
                 cursor.execute("""
-                    SELECT id, category, fact 
-                    FROM memories_fts 
+                    SELECT m.id, m.category, m.fact 
+                    FROM memories m
+                    JOIN memories_fts f ON m.id = f.id
                     WHERE memories_fts MATCH ?
-                    ORDER BY rank
+                    ORDER BY f.rank
                     LIMIT ?;
-                """, (fts_query, limit + len(seen_ids)))
+                """, (fts_query, limit_facts + len(seen_fact_ids)))
                 for r in cursor.fetchall():
-                    if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
-                        context_rows.append(r)
-                        seen_ids.add(r[0])
-                        if len(context_rows) >= limit:
+                    if r[0] not in seen_fact_ids and r[1] not in ('preference', 'rule', 'preferences'):
+                        fact_rows.append(r)
+                        seen_fact_ids.add(r[0])
+                        if len(fact_rows) >= limit_facts:
                             break
             except sqlite3.OperationalError:
-                context_rows = []
+                fact_rows = []
 
-            # Fuzzy / Typo Fallback if no exact/prefix match found
-            if not context_rows and any(len(w) >= 4 for w in words):
+            # Query Episodes FTS via JOIN
+            try:
+                cursor.execute("""
+                    SELECT e.id, e.topic, e.title, e.period, e.status, e.narrative, e.entities, e.stance 
+                    FROM episodes e
+                    JOIN episodes_fts f ON e.id = f.id
+                    WHERE episodes_fts MATCH ?
+                    ORDER BY f.rank
+                    LIMIT ?;
+                """, (fts_query, limit_episodes))
+                episode_rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                episode_rows = []
+
+            # Query Learnings FTS via JOIN
+            try:
+                cursor.execute("""
+                    SELECT l.id, l.category, l.insight, l.context 
+                    FROM learnings l
+                    JOIN learnings_fts f ON l.id = f.id
+                    WHERE learnings_fts MATCH ?
+                    ORDER BY f.rank
+                    LIMIT ?;
+                """, (fts_query, limit_learnings))
+                learning_rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                learning_rows = []
+
+            # Fuzzy / Typo Fallback if no matching results found
+            if not fact_rows and not episode_rows and any(len(w) >= 4 for w in words):
                 vocab = get_all_vocabulary(cursor)
                 corrected_words = []
                 for w in words:
@@ -206,27 +336,62 @@ def prefetch(query: str, limit: int = 3):
                     fuzzy_fts = " OR ".join([f'"{cw}"*' if len(cw) >= 4 else f'"{cw}"' for cw in corrected_words])
                     try:
                         cursor.execute("""
-                            SELECT id, category, fact 
-                            FROM memories_fts 
+                            SELECT m.id, m.category, m.fact 
+                            FROM memories m
+                            JOIN memories_fts f ON m.id = f.id
                             WHERE memories_fts MATCH ?
-                            ORDER BY rank
+                            ORDER BY f.rank
                             LIMIT ?;
-                        """, (fuzzy_fts, limit + len(seen_ids)))
+                        """, (fuzzy_fts, limit_facts + len(seen_fact_ids)))
                         for r in cursor.fetchall():
-                            if r[0] not in seen_ids and r[1] not in ('preference', 'rule'):
-                                context_rows.append(r)
-                                seen_ids.add(r[0])
-                                if len(context_rows) >= limit:
+                            if r[0] not in seen_fact_ids and r[1] not in ('preference', 'rule', 'preferences'):
+                                fact_rows.append(r)
+                                seen_fact_ids.add(r[0])
+                                if len(fact_rows) >= limit_facts:
                                     break
                     except sqlite3.OperationalError:
                         pass
 
-        all_output_rows = pref_rows + context_rows
-        if all_output_rows:
-            print("[🧠 Memory Context]")
-            for _, cat, fact in all_output_rows:
-                prefix = f"({cat}) " if cat else ""
-                print(f"• {prefix}{fact}")
+                    try:
+                        cursor.execute("""
+                            SELECT e.id, e.topic, e.title, e.period, e.status, e.narrative, e.entities, e.stance 
+                            FROM episodes e
+                            JOIN episodes_fts f ON e.id = f.id
+                            WHERE episodes_fts MATCH ?
+                            ORDER BY f.rank
+                            LIMIT ?;
+                        """, (fuzzy_fts, limit_episodes))
+                        episode_rows = cursor.fetchall()
+                    except sqlite3.OperationalError:
+                        pass
+
+        # Output Generation
+        total_facts = pref_rows + fact_rows
+        if total_facts or episode_rows or learning_rows:
+            if total_facts:
+                print("[🧠 Memory Context - Facts]")
+                for _, cat, fact in total_facts:
+                    prefix = f"({cat}) " if cat else ""
+                    print(f"• {prefix}{fact}")
+
+            if episode_rows:
+                print("\n[📖 Narrative Context - Episodic Memory]")
+                for eid, topic, title, period, status, narrative, entities, stance in episode_rows:
+                    period_str = f" | {period}" if period else ""
+                    status_str = f" | {status}" if status else ""
+                    print(f"• [{title}{period_str}{status_str}]")
+                    print(f"  Kontext: {narrative}")
+                    if stance:
+                        print(f"  Haltung/Stance: {stance}")
+                    if entities:
+                        print(f"  Beteiligte/Entitäten: {entities}")
+
+            if learning_rows:
+                print("\n[💡 Learnings & Heuristics]")
+                for lid, cat, insight, context in learning_rows:
+                    prefix = f"({cat}) " if cat else ""
+                    ctx_str = f" [Kontext: {context}]" if context else ""
+                    print(f"• {prefix}{insight}{ctx_str}")
 
 def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
     with db_session() as conn:
@@ -242,50 +407,139 @@ def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
         """, (fact_id, category, fact, keywords))
         conn.commit()
 
-def list_memories():
+def upsert_episode(episode_id: str, topic: str, title: str, narrative: str, period: str = "", status: str = "active", entities: str = "", stance: str = "", keywords: str = ""):
     with db_session() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, category, fact, updated_at FROM memories ORDER BY updated_at DESC")
-        rows = cursor.fetchall()
-        if not rows:
-            print("No memories stored yet.")
-            return
-        print(f"{'ID':<25} | {'CATEGORY':<12} | {'FACT'}")
-        print("-" * 75)
-        for fid, cat, fact, _ in rows:
+        cursor.execute("""
+            INSERT INTO episodes (id, topic, title, period, status, narrative, entities, stance, keywords, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                topic = excluded.topic,
+                title = excluded.title,
+                period = excluded.period,
+                status = excluded.status,
+                narrative = excluded.narrative,
+                entities = excluded.entities,
+                stance = excluded.stance,
+                keywords = excluded.keywords,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (episode_id, topic, title, period, status, narrative, entities, stance, keywords))
+        conn.commit()
+
+def upsert_learning(learning_id: str, category: str, insight: str, context: str = "", keywords: str = ""):
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO learnings (id, category, insight, context, keywords, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                category = excluded.category,
+                insight = excluded.insight,
+                context = excluded.context,
+                keywords = excluded.keywords,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (learning_id, category, insight, context, keywords))
+        conn.commit()
+
+def list_all():
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, category, fact FROM memories ORDER BY category, id")
+        facts = cursor.fetchall()
+        cursor.execute("SELECT id, topic, title, period, status, narrative, stance FROM episodes ORDER BY topic, id")
+        episodes = cursor.fetchall()
+        cursor.execute("SELECT id, category, insight, context FROM learnings ORDER BY category, id")
+        learnings = cursor.fetchall()
+
+        print("=" * 80)
+        print(f"SEMANTIC FACTS ({len(facts)})")
+        print("=" * 80)
+        for fid, cat, fact in facts:
             print(f"{fid:<25} | {(cat or ''):<12} | {fact}")
+
+        print("\n" + "=" * 80)
+        print(f"NARRATIVE CHRONICLES & EPISODES ({len(episodes)})")
+        print("=" * 80)
+        for eid, topic, title, period, status, narrative, stance in episodes:
+            p_str = f" ({period})" if period else ""
+            s_str = f" [{status}]" if status else ""
+            print(f"\n▶ [{eid}] {title}{p_str}{s_str} (Topic: {topic})")
+            print(f"  Narrative: {narrative}")
+            if stance:
+                print(f"  Stance:    {stance}")
+
+        print("\n" + "=" * 80)
+        print(f"EXPERIENTIAL LEARNINGS & HEURISTICS ({len(learnings)})")
+        print("=" * 80)
+        for lid, cat, insight, context in learnings:
+            ctx = f" (Context: {context})" if context else ""
+            print(f"{lid:<25} | {(cat or ''):<12} | {insight}{ctx}")
 
 def sync_turn(user_prompt: str, assistant_response: str):
     if is_trivial_prompt(user_prompt):
         return
 
-    existing_keys = get_existing_keys()
-    keys_context = f"Existing database keys: {json.dumps(existing_keys)}" if existing_keys else ""
+    inv = get_existing_database_inventory()
+    inv_context = json.dumps(inv, ensure_ascii=False, indent=2)
 
-    prompt = f"""Analyze the conversation below. If persistent personal facts, preferences, server IPs, device IDs, or configuration changes were stated/updated/cancelled, extract them.
-{keys_context}
-IMPORTANT: If an existing key from the database list above matches the subject (e.g. 'travel.iceland2027'), USE THAT EXACT KEY ID to update it.
+    prompt = f"""You are the Multi-Layer Cognitive Memory Engine for Stephan Bolten.
+Analyze the conversation turn below and extract any persistent information across THREE distinct layers:
 
-Always provide multilingual search keywords (German, English, synonyms, alternative spellings, query terms) in the "keywords" field for each fact.
+1. ATOMIC FACTS ("facts"): Hard facts, IP addresses, specs, master data, device IDs, account names, medications, configuration parameters, definite dates.
+2. NARRATIVE CHRONICLES & EPISODES ("episodes"): Background histories, disputes, social/relationship dynamics, sentiment/stances towards people/topics, multi-event story arcs, context over time.
+3. EXPERIENTIAL LEARNINGS ("learnings"): Practical insights, rules of thumb, lessons learned from past actions, subjective opinions or tested heuristics.
+
+Existing Database Keys & Topics:
+{inv_context}
+
+RULES:
+- If updating an existing item from the inventory above, reuse its exact ID.
+- Keep facts atomic and dense.
+- Keep narrative episodes rich with context, background, and user stance (3-5 comprehensive sentences).
+- Always include multilingual keywords (German/English synonyms, misspellings, related query terms).
+- If NOTHING persistent or new was revealed in a category, leave its array empty.
 
 User: {user_prompt}
 Assistant: {assistant_response}
 
-If NO new or updated persistent facts exist, output ONLY: NONE
-If facts exist, output ONLY a valid JSON array of objects with keys "id", "category", "fact", and "keywords". Example:
-[
-  {{
-    "id": "travel.iceland2027",
-    "category": "travel",
-    "fact": "Island Reise 2027 wurde abgesagt wegen Budget.",
-    "keywords": "Iceland Island travel trip vacation holiday Reykjavik ferien urlaub"
-  }}
-]
+Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "episodes":[], "learnings":[]}} if none):
+{{
+  "facts": [
+    {{
+      "id": "...",
+      "category": "...",
+      "fact": "...",
+      "keywords": "..."
+    }}
+  ],
+  "episodes": [
+    {{
+      "id": "...",
+      "topic": "...",
+      "title": "...",
+      "period": "...",
+      "status": "active|historic|resolved",
+      "narrative": "...",
+      "entities": "...",
+      "stance": "...",
+      "keywords": "..."
+    }}
+  ],
+  "learnings": [
+    {{
+      "id": "...",
+      "category": "...",
+      "insight": "...",
+      "context": "...",
+      "keywords": "..."
+    }}
+  ]
+}}
 """
+
     model_name = get_cached_model()
     out = ""
 
-    # Attempt 1: Fast cached model execution with 90s timeout
     try:
         res = subprocess.run(
             [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
@@ -295,7 +549,6 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
     except Exception:
         out = ""
 
-    # Attempt 2: If cached model failed/timed out, perform auto-discovery and retry
     if not out:
         model_name = discover_and_cache_latest_flash_low_model()
         try:
@@ -308,201 +561,74 @@ If facts exist, output ONLY a valid JSON array of objects with keys "id", "categ
             sys.stderr.write(f"Sync failed: {e}\n")
             return
 
-    if not out or "NONE" in out:
+    if not out:
         return
 
-    json_match = re.search(r'\[.*\]', out, re.DOTALL)
+    json_match = re.search(r'\{.*\}', out, re.DOTALL)
     if json_match:
         try:
-            facts = json.loads(json_match.group(0))
-            if isinstance(facts, list):
-                for item in facts:
-                    if isinstance(item, dict) and "id" in item and "fact" in item:
-                        upsert_fact(item["id"], item.get("category", "general"), item["fact"], item.get("keywords", ""))
-                        print(f"Memory synced via {model_name}: {item['id']}")
+            data = json.loads(json_match.group(0))
+            if isinstance(data, dict):
+                # Facts
+                for f in data.get("facts", []):
+                    if isinstance(f, dict) and "id" in f and "fact" in f:
+                        upsert_fact(f["id"], f.get("category", "general"), f["fact"], f.get("keywords", ""))
+                        print(f"Fact synced: {f['id']}")
+                # Episodes
+                for ep in data.get("episodes", []):
+                    if isinstance(ep, dict) and "id" in ep and "narrative" in ep:
+                        upsert_episode(
+                            ep["id"],
+                            ep.get("topic", "general"),
+                            ep.get("title", ep["id"]),
+                            ep["narrative"],
+                            period=ep.get("period", ""),
+                            status=ep.get("status", "active"),
+                            entities=ep.get("entities", ""),
+                            stance=ep.get("stance", ""),
+                            keywords=ep.get("keywords", "")
+                        )
+                        print(f"Episode synced: {ep['id']}")
+                # Learnings
+                for lr in data.get("learnings", []):
+                    if isinstance(lr, dict) and "id" in lr and "insight" in lr:
+                        upsert_learning(
+                            lr["id"],
+                            lr.get("category", "general"),
+                            lr["insight"],
+                            context=lr.get("context", ""),
+                            keywords=lr.get("keywords", "")
+                        )
+                        print(f"Learning synced: {lr['id']}")
         except json.JSONDecodeError as e:
             sys.stderr.write(f"JSON decode error during memory sync: {e}\n")
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
-def compact_memories(apply_changes: bool = False):
-    """
-    Audit all facts in memory.db for redundancies, overlapping information, and contradictions.
-    Creates a timestamped backup before applying any modifications.
-    Consolidates facts without data loss, updates SQLite FTS, and runs VACUUM.
-    """
-    with db_session() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, category, fact, keywords FROM memories ORDER BY category, id")
-        rows = cursor.fetchall()
-
-    if not rows:
-        print("No memories to compact.")
-        return
-
-    current_memories = [
-        {"id": r[0], "category": r[1] or "general", "fact": r[2], "keywords": r[3] or ""}
-        for r in rows
-    ]
-
-    print(f"Loaded {len(current_memories)} memories for audit & compaction...")
-
-    prompt = f"""You are an expert data curator and fact-consolidation engine.
-Analyze the following JSON list of persistent memories extracted from a user's SQLite knowledge base.
-
-Goal:
-1. Detect duplicate or semantically redundant entries (e.g. facts mentioned in multiple places or partial duplicates).
-2. Detect contradictions or outdated states (if one fact supersedes another, retain the most current, accurate, comprehensive information).
-3. Merge overlapping facts into clean, atomic, consolidated entries WITHOUT ANY INFORMATION LOSS.
-4. Ensure hierarchical and consistent ID keys (e.g., 'user.profile', 'infra.oci', 'finance.etf').
-5. Generate comprehensive multilingual keywords (German/English synonyms, misspellings, search terms) for each consolidated item.
-6. Preserve all existing accurate details (names, dates, IDs, IPs, serial numbers, account info, specific parameters). DO NOT DROP ANY SPECIFIC FACTS OR DETAILS.
-
-Input Memories:
-{json.dumps(current_memories, ensure_ascii=False, indent=2)}
-
-Output Format:
-Return ONLY a valid JSON array of consolidated memory objects. Each object must have:
-- "id": string (the unique canonical key)
-- "category": string
-- "fact": string (clear, dense, consolidated factual summary)
-- "keywords": string (space-separated search terms/synonyms)
-
-If no consolidation or deduplication is necessary and the current list is already optimal, return the exact same items.
-Output JSON only:
-"""
-
-    model_name = get_cached_model()
-    out = ""
-
-    print(f"Analyzing knowledge base with {model_name}...")
-    try:
-        res = subprocess.run(
-            [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
-            capture_output=True, text=True, timeout=120
-        )
-        out = res.stdout.strip()
-    except Exception:
-        out = ""
-
-    if not out:
-        model_name = discover_and_cache_latest_flash_low_model()
-        try:
-            res = subprocess.run(
-                [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
-                capture_output=True, text=True, timeout=120
-            )
-            out = res.stdout.strip()
-        except Exception as e:
-            sys.stderr.write(f"Compaction analysis failed: {e}\n")
-            return
-
-    json_match = re.search(r'\[.*\]', out, re.DOTALL)
-    if not json_match:
-        print("Compaction error: Model did not return a valid JSON array.")
-        return
-
-    try:
-        compacted = json.loads(json_match.group(0))
-    except Exception as e:
-        print(f"JSON parsing error: {e}")
-        return
-
-    if not isinstance(compacted, list) or len(compacted) == 0:
-        print("Compaction error: Empty result.")
-        return
-
-    # Diff analysis
-    old_by_id = {m["id"]: m for m in current_memories}
-    new_by_id = {m["id"]: m for m in compacted}
-
-    added = [m for m in compacted if m["id"] not in old_by_id]
-    removed = [m for m in current_memories if m["id"] not in new_by_id]
-    modified = [
-        m for m in compacted
-        if m["id"] in old_by_id and (
-            old_by_id[m["id"]]["fact"] != m["fact"] or
-            old_by_id[m["id"]]["category"] != m["category"]
-        )
-    ]
-    unchanged = [
-        m for m in compacted
-        if m["id"] in old_by_id and (
-            old_by_id[m["id"]]["fact"] == m["fact"] and
-            old_by_id[m["id"]]["category"] == m["category"]
-        )
-    ]
-
-    print("\n" + "=" * 60)
-    print("COMPACTION AUDIT REPORT")
-    print("=" * 60)
-    print(f"Original entries:  {len(current_memories)}")
-    print(f"Compacted entries: {len(compacted)}")
-    print(f"Unchanged:         {len(unchanged)}")
-    print(f"Modified/Merged:   {len(modified)}")
-    print(f"New keys:          {len(added)}")
-    print(f"Removed/Merged:    {len(removed)}")
-
-    if modified:
-        print("\n--- MODIFIED / CONSOLIDATED ENTRIES ---")
-        for m in modified:
-            old = old_by_id[m["id"]]
-            print(f"\nKey: [{m['id']}] (Category: {m['category']})")
-            print(f"  [-] Old: {old['fact']}")
-            print(f"  [+] New: {m['fact']}")
-
-    if removed:
-        print("\n--- MERGED / REMOVED KEYS ---")
-        for r in removed:
-            print(f"  [-] {r['id']}: {r['fact']}")
-
-    if added:
-        print("\n--- NEW KEYS ---")
-        for a in added:
-            print(f"  [+] {a['id']}: {a['fact']}")
-
-    if not apply_changes:
-        print("\n" + "=" * 60)
-        print("[DRY-RUN] No changes were written to database.")
-        print("To apply changes, run with '--apply'.")
-        print("=" * 60)
-        return
-
-    # Backup before applying
+def compact_all(apply_changes: bool = False):
+    """Compacts and optimizes all SQLite tables, runs VACUUM and rebuilds FTS indexes."""
     backup_dir = os.path.expanduser("~/.gemini/archive")
     os.makedirs(backup_dir, exist_ok=True)
     import datetime
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     backup_file = os.path.join(backup_dir, f"memory_db_backup_{ts}.bak")
     shutil.copy2(DB_PATH, backup_file)
-    print(f"\n[BACKUP] Snapshot created: {backup_file}")
+    print(f"[BACKUP] Snapshot created: {backup_file}")
 
     with db_session() as conn:
-        cursor = conn.cursor()
-        # Atomic replace in transaction
-        cursor.execute("DELETE FROM memories;")
-        for item in compacted:
-            cursor.execute("""
-                INSERT INTO memories (id, category, fact, keywords, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP);
-            """, (item["id"], item.get("category", "general"), item["fact"], item.get("keywords", "")))
-        conn.commit()
-
-        # Optimize DB and rebuild FTS
-        print("[OPTIMIZE] Running VACUUM and FTS5 rebuild...")
+        print("[OPTIMIZE] Rebuilding FTS5 indexes...")
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');")
         conn.commit()
 
-    # VACUUM outside transaction
     conn_raw = sqlite3.connect(DB_PATH)
     conn_raw.execute("VACUUM;")
     conn_raw.close()
-
-    print("[SUCCESS] Memory database successfully compacted, deduplicated, and vacuumed!")
-
+    print("[SUCCESS] All tables and indexes successfully rebuilt and vacuumed!")
 
 def main():
-    parser = argparse.ArgumentParser(description="AGY Standalone Memory Engine")
+    parser = argparse.ArgumentParser(description="AGY Multi-Layer Cognitive Memory Engine")
     subparsers = parser.add_subparsers(dest="command")
 
     pf = subparsers.add_parser("prefetch")
@@ -518,8 +644,26 @@ def main():
     ad.add_argument("--fact", type=str, required=True)
     ad.add_argument("--keywords", type=str, default="")
 
+    ae = subparsers.add_parser("add-episode")
+    ae.add_argument("--id", type=str, required=True)
+    ae.add_argument("--topic", type=str, required=True)
+    ae.add_argument("--title", type=str, required=True)
+    ae.add_argument("--narrative", type=str, required=True)
+    ae.add_argument("--period", type=str, default="")
+    ae.add_argument("--status", type=str, default="active")
+    ae.add_argument("--entities", type=str, default="")
+    ae.add_argument("--stance", type=str, default="")
+    ae.add_argument("--keywords", type=str, default="")
+
+    al = subparsers.add_parser("add-learning")
+    al.add_argument("--id", type=str, required=True)
+    al.add_argument("--category", type=str, default="general")
+    al.add_argument("--insight", type=str, required=True)
+    al.add_argument("--context", type=str, default="")
+    al.add_argument("--keywords", type=str, default="")
+
     cp = subparsers.add_parser("compact")
-    cp.add_argument("--apply", action="store_true", help="Apply compaction changes (default: dry-run)")
+    cp.add_argument("--apply", action="store_true", help="Apply compaction changes")
 
     subparsers.add_parser("list")
 
@@ -531,14 +675,19 @@ def main():
         sync_turn(args.user, args.assistant)
     elif args.command == "add":
         upsert_fact(args.id, args.category, args.fact, args.keywords)
-        print(f"Added memory {args.id}")
+        print(f"Added fact {args.id}")
+    elif args.command == "add-episode":
+        upsert_episode(args.id, args.topic, args.title, args.narrative, args.period, args.status, args.entities, args.stance, args.keywords)
+        print(f"Added episode {args.id}")
+    elif args.command == "add-learning":
+        upsert_learning(args.id, args.category, args.insight, args.context, args.keywords)
+        print(f"Added learning {args.id}")
     elif args.command == "compact":
-        compact_memories(apply_changes=args.apply)
+        compact_all(apply_changes=args.apply)
     elif args.command == "list":
-        list_memories()
+        list_all()
     else:
         parser.print_help()
 
 if __name__ == "__main__":
     main()
-
