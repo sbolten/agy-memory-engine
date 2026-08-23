@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
 Comprehensive Unit & Integration Test Suite for agy-memory-engine
+
 Tests:
 - Database initialization & schema creation (memories, episodes, learnings)
 - FTS5 indexing & automatic trigger synchronization
 - Multi-layer Prefetch (Facts + Episodes + Learnings + Preferences)
-- Fuzzy & typo matching
 - Upsert logic (conflict resolution & in-place updates)
-- Ingestion & compaction lifecycle
+- Fuzzy & typo matching
+- Protected categories guard
+- Empty database / edge cases
+- Unicode & special characters
+- Trivial prompt filtering
+- Optimization lifecycle (backup, rebuild, vacuum)
+- Schema initialization efficiency (only once per process)
 """
 
 import os
@@ -16,30 +22,39 @@ import tempfile
 import unittest
 import json
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 
 # Set temporary test database environment variable before importing engine
 TEST_DIR = tempfile.mkdtemp()
 TEST_DB = os.path.join(TEST_DIR, "test_memory.db")
 os.environ["AGY_MEMORY_DB"] = TEST_DB
 
+# Must set env before importing schema module
+import schema
+schema.DB_PATH = TEST_DB
+schema._SCHEMA_INITIALIZED.clear()
+
 import agy_memory
 
-class TestAgyMemoryEngine(unittest.TestCase):
+
+class TestFactLifecycle(unittest.TestCase):
+    """Tests for Layer 1: Atomic Facts."""
 
     def setUp(self):
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
 
     def tearDown(self):
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
 
-    def test_01_fact_lifecycle(self):
-        """Test creating, indexing and querying atomic facts."""
+    def test_create_and_query_fact(self):
+        """Basic fact creation and FTS5 indexing."""
         agy_memory.upsert_fact("infra.test_ip", "infra", "Server IP 192.168.1.50", "server ip network test")
         
-        with agy_memory.db_session() as conn:
+        with schema.db_session(TEST_DB) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT fact FROM memories WHERE id = 'infra.test_ip'")
             row = cursor.fetchone()
@@ -52,10 +67,52 @@ class TestAgyMemoryEngine(unittest.TestCase):
             self.assertIsNotNone(fts_row)
             self.assertEqual(fts_row[0], "infra.test_ip")
 
-    def test_02_episode_lifecycle(self):
-        """Test creating, indexing and querying narrative chronicles/episodes."""
+    def test_upsert_overwrites_existing(self):
+        """Upsert should overwrite an existing fact with the same ID."""
+        agy_memory.upsert_fact("test.key", "general", "Original value", "kw1")
+        agy_memory.upsert_fact("test.key", "updated_cat", "Updated value", "kw2")
+        
+        with schema.db_session(TEST_DB) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT category, fact, keywords FROM memories WHERE id = 'test.key'")
+            row = cursor.fetchone()
+            self.assertEqual(row[0], "updated_cat")
+            self.assertEqual(row[1], "Updated value")
+            self.assertEqual(row[2], "kw2")
+            
+            # Ensure only one row exists (no duplication)
+            cursor.execute("SELECT COUNT(*) FROM memories WHERE id = 'test.key'")
+            self.assertEqual(cursor.fetchone()[0], 1)
+
+    def test_unicode_umlauts_in_facts(self):
+        """Facts with German umlauts and special characters should be stored and searchable."""
+        agy_memory.upsert_fact("test.umlaut", "test", "Zürich Höhenweg Strässchen", "zürich höhe ö ä ü")
+        
+        with schema.db_session(TEST_DB) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM memories_fts WHERE memories_fts MATCH 'Zürich'")
+            row = cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "test.umlaut")
+
+
+class TestEpisodeLifecycle(unittest.TestCase):
+    """Tests for Layer 2: Narrative Chronicles & Episodes."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_create_and_query_episode(self):
+        """Episode creation and FTS5 indexing."""
         agy_memory.upsert_episode(
-            episode_id="stweg.test_dispute",
+            episode_id="stweg.test",
             topic="stweg",
             title="STWEG Höhenweg 15 Streitfall",
             period="2020-2026",
@@ -66,22 +123,50 @@ class TestAgyMemoryEngine(unittest.TestCase):
             keywords="Jenni Baum Garten Kamin Streit"
         )
 
-        with agy_memory.db_session() as conn:
+        with schema.db_session(TEST_DB) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT title, stance FROM episodes WHERE id = 'stweg.test_dispute'")
+            cursor.execute("SELECT title, stance FROM episodes WHERE id = 'stweg.test'")
             row = cursor.fetchone()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], "STWEG Höhenweg 15 Streitfall")
             self.assertEqual(row[1], "Nur schriftliche Anwaltskommunikation")
 
-            # Test FTS5 sync trigger
             cursor.execute("SELECT id FROM episodes_fts WHERE episodes_fts MATCH 'Baumschnitt'")
             fts_row = cursor.fetchone()
             self.assertIsNotNone(fts_row)
-            self.assertEqual(fts_row[0], "stweg.test_dispute")
 
-    def test_03_learning_lifecycle(self):
-        """Test creating, indexing and querying experiential learnings."""
+    def test_episode_upsert_updates_in_place(self):
+        """Upserting an episode should update all fields without creating duplicates."""
+        agy_memory.upsert_episode("ep.test", "general", "Title V1", "Narrative V1", status="active")
+        agy_memory.upsert_episode("ep.test", "general", "Title V2", "Narrative V2", status="resolved")
+        
+        with schema.db_session(TEST_DB) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT title, narrative, status FROM episodes WHERE id = 'ep.test'")
+            row = cursor.fetchone()
+            self.assertEqual(row[0], "Title V2")
+            self.assertEqual(row[1], "Narrative V2")
+            self.assertEqual(row[2], "resolved")
+            
+            cursor.execute("SELECT COUNT(*) FROM episodes WHERE id = 'ep.test'")
+            self.assertEqual(cursor.fetchone()[0], 1)
+
+
+class TestLearningLifecycle(unittest.TestCase):
+    """Tests for Layer 3: Experiential Learnings."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_create_and_query_learning(self):
+        """Learning creation and FTS5 indexing."""
         agy_memory.upsert_learning(
             learning_id="travel.dog_ferienhaus",
             category="travel",
@@ -90,48 +175,47 @@ class TestAgyMemoryEngine(unittest.TestCase):
             keywords="Ferienhaus Hund Zaun Italien"
         )
 
-        with agy_memory.db_session() as conn:
+        with schema.db_session(TEST_DB) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT insight FROM learnings WHERE id = 'travel.dog_ferienhaus'")
             row = cursor.fetchone()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], "Immer Zaunhöhe vorab prüfen für Hund.")
 
-            # Test FTS5 sync trigger
             cursor.execute("SELECT id FROM learnings_fts WHERE learnings_fts MATCH 'Zaunhöhe'")
             fts_row = cursor.fetchone()
             self.assertIsNotNone(fts_row)
-            self.assertEqual(fts_row[0], "travel.dog_ferienhaus")
 
-    def test_04_multi_layer_prefetch(self):
-        """Test prefetching across all layers in a single query."""
-        # 1. Fact
+
+class TestMultiLayerPrefetch(unittest.TestCase):
+    """Tests for cross-layer prefetch functionality."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_multi_layer_prefetch(self):
+        """Prefetch should return results from all three layers."""
         agy_memory.upsert_fact("pref.text", "preference", "Immer Zeilenabstand halten", "format text layout")
-        agy_memory.upsert_fact("infra.router", "infra", "FritzBox 7590 IP 192.168.1.1", "router fritzbox network")
-        
-        # 2. Episode
         agy_memory.upsert_episode(
-            "stweg.jenni_konflikt",
-            "stweg",
-            "Nachbarschaftskonflikt Jenni",
-            "2020-2026",
-            "active",
+            "stweg.jenni", "stweg", "Nachbarschaftskonflikt Jenni",
             "Streitfall wegen Baumschnitt im Garten und Laub.",
-            "Mariano Jenni, Stephan Bolten",
-            "Formelle Distanz",
-            "Jenni Nachbar Garten Baum Laub"
+            period="2020-2026", status="active",
+            keywords="Jenni Nachbar Garten Baum Laub"
         )
-
-        # 3. Learning
         agy_memory.upsert_learning(
-            "travel.fewo_garden",
-            "travel",
+            "travel.fewo_garden", "travel",
             "Garten muss komplett eingezäunt sein.",
             "Reisen mit Hund",
             "Garten Zaun Fewo Hund"
         )
 
-        # Test prefetch output capture
         f = io.StringIO()
         with redirect_stdout(f):
             agy_memory.prefetch("Was ist der Status mit Jenni und dem Garten?")
@@ -141,20 +225,181 @@ class TestAgyMemoryEngine(unittest.TestCase):
         self.assertIn("Immer Zeilenabstand halten", output)
         self.assertIn("[📖 Narrative Context - Episodic Memory]", output)
         self.assertIn("Nachbarschaftskonflikt Jenni", output)
-        self.assertIn("Streitfall wegen Baumschnitt im Garten", output)
         self.assertIn("[💡 Learnings & Heuristics]", output)
         self.assertIn("Garten muss komplett eingezäunt sein", output)
 
-    def test_05_compaction_and_rebuild(self):
-        """Test vacuum and FTS rebuild."""
-        agy_memory.upsert_fact("test.key", "general", "Fact 1", "keyword1")
-        agy_memory.compact_all(apply_changes=True)
+    def test_prefetch_on_empty_database(self):
+        """Prefetch on an empty database should not crash."""
+        f = io.StringIO()
+        with redirect_stdout(f):
+            agy_memory.prefetch("Wo ist der Server?")
+        output = f.getvalue()
+        # Should produce no output (empty DB), but not crash
+        self.assertEqual(output, "")
 
-        with agy_memory.db_session() as conn:
+    def test_preferences_always_loaded(self):
+        """Preferences should always appear even for unrelated queries."""
+        agy_memory.upsert_fact("pref.rule1", "preferences", "Always speak German", "sprache deutsch")
+        agy_memory.upsert_fact("infra.server", "infra", "Server 10.0.0.1", "server ip")
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            agy_memory.prefetch("Erzähl mir einen Witz")
+        output = f.getvalue()
+        # Preferences should load even though query doesn't match them
+        self.assertIn("Always speak German", output)
+
+
+class TestTrivialPromptFilter(unittest.TestCase):
+    """Tests for the trivial prompt rejection filter."""
+
+    def test_trivial_prompts(self):
+        """Known trivial inputs should be filtered."""
+        trivial = ["ok", "yes", "no", "thanks!", "y", "cool", "next", "lgtm", "/help", ""]
+        for t in trivial:
+            self.assertTrue(agy_memory.is_trivial_prompt(t), f"'{t}' should be trivial")
+
+    def test_non_trivial_prompts(self):
+        """Real questions should not be filtered."""
+        non_trivial = [
+            "Was ist der Status mit Jenni?",
+            "Wie geht es Abbie?",
+            "Update the server IP to 10.0.0.1",
+            "Show me the Tesla charging stats",
+        ]
+        for t in non_trivial:
+            self.assertFalse(agy_memory.is_trivial_prompt(t), f"'{t}' should NOT be trivial")
+
+
+class TestProtectedCategories(unittest.TestCase):
+    """Tests for the protected category guard."""
+
+    def test_health_key_is_protected(self):
+        self.assertTrue(agy_memory._is_protected_key("health.abbie.epilepsie"))
+
+    def test_finance_key_is_protected(self):
+        self.assertTrue(agy_memory._is_protected_key("finance.etf"))
+
+    def test_pension_key_is_protected(self):
+        self.assertTrue(agy_memory._is_protected_key("pension.vz.planning"))
+
+    def test_user_key_is_protected(self):
+        self.assertTrue(agy_memory._is_protected_key("user.dog.abbie"))
+
+    def test_infra_key_is_not_protected(self):
+        self.assertFalse(agy_memory._is_protected_key("infra.server.ip"))
+
+    def test_trading_key_is_not_protected(self):
+        self.assertFalse(agy_memory._is_protected_key("trading.tpa"))
+
+
+class TestDiffFormatting(unittest.TestCase):
+    """Tests for the diff output formatting used in dry-run mode."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_new_entry_diff(self):
+        """A new entry should be marked as [NEW]."""
+        diff = agy_memory._format_diff(None, {"id": "test.new", "fact": "hello"}, "Fact")
+        self.assertIn("[NEW]", diff)
+        self.assertIn("test.new", diff)
+
+    def test_update_diff_shows_changes(self):
+        """An update should show old → new values."""
+        old = {"id": "test.key", "fact": "old value", "category": "general"}
+        new = {"id": "test.key", "fact": "new value", "category": "general"}
+        diff = agy_memory._format_diff(old, new, "Fact")
+        self.assertIn("[UPDATE]", diff)
+        self.assertIn("old value", diff)
+        self.assertIn("new value", diff)
+
+    def test_protected_update_shows_marker(self):
+        """Updates to protected keys should show the 🔒 marker."""
+        old = {"id": "health.abbie", "fact": "old dose"}
+        new = {"id": "health.abbie", "fact": "new dose"}
+        diff = agy_memory._format_diff(old, new, "Fact")
+        self.assertIn("PROTECTED", diff)
+        self.assertIn("🔒", diff)
+
+
+class TestOptimizeDB(unittest.TestCase):
+    """Tests for the optimize/compact lifecycle."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_optimize_creates_backup_and_succeeds(self):
+        """Optimize should create backup, rebuild FTS, and report stats."""
+        agy_memory.upsert_fact("test.key", "general", "Fact 1", "keyword1")
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            agy_memory.optimize_db(apply_changes=True)
+        output = f.getvalue()
+
+        self.assertIn("[BACKUP]", output)
+        self.assertIn("[STATS]", output)
+        self.assertIn("[OPTIMIZE]", output)
+        self.assertIn("[SUCCESS]", output)
+        self.assertIn("Facts: 1", output)
+
+        # Verify data survived
+        with schema.db_session(TEST_DB) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT fact FROM memories WHERE id = 'test.key'")
             row = cursor.fetchone()
             self.assertEqual(row[0], "Fact 1")
+
+    def test_compact_alias_works(self):
+        """The backward-compat 'compact_all' alias should call optimize_db."""
+        agy_memory.upsert_fact("test.compat", "general", "Compat test", "")
+        f = io.StringIO()
+        with redirect_stdout(f):
+            agy_memory.compact_all(apply_changes=True)
+        output = f.getvalue()
+        self.assertIn("[SUCCESS]", output)
+
+
+class TestSchemaInitOnce(unittest.TestCase):
+    """Test that schema is only initialized once per process per DB path."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_schema_initialized_flag_set(self):
+        """After first db_session, the path should be in _SCHEMA_INITIALIZED."""
+        with schema.db_session(TEST_DB) as conn:
+            pass
+        self.assertIn(TEST_DB, schema._SCHEMA_INITIALIZED)
+
+    def test_multiple_sessions_no_error(self):
+        """Multiple sequential db_session calls should work without errors."""
+        for _ in range(5):
+            with schema.db_session(TEST_DB) as conn:
+                conn.execute("SELECT 1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,8 @@ import json
 import difflib
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
+from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
+
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
 DEFAULT_MODEL = "gemini-3.7-flash-high"
 AGY_BIN = os.environ.get("AGY_BIN") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
@@ -42,131 +43,12 @@ TRIVIAL_PROMPT_RE = re.compile(
     r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
     r'hi|hey|hello|yo|sup|1|2|3|4|5|'
     r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
-    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
+    r'[\s!?.:;,"\'' + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
     re.IGNORECASE,
 )
 
-@contextmanager
-def db_session():
-    """Ensure directory exists and manage SQLite connection lifecycle cleanly."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-
-    # 1. Memories Table (Atomic Facts)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            category TEXT,
-            fact TEXT NOT NULL,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            id, category, fact, keywords
-        );
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts (id, category, fact, keywords)
-            VALUES (new.id, new.category, new.fact, new.keywords);
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_memories_ad AFTER DELETE ON memories BEGIN
-            DELETE FROM memories_fts WHERE id = old.id;
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_memories_au AFTER UPDATE ON memories BEGIN
-            DELETE FROM memories_fts WHERE id = old.id;
-            INSERT INTO memories_fts (id, category, fact, keywords)
-            VALUES (new.id, new.category, new.fact, new.keywords);
-        END;
-    """)
-
-    # 2. Episodes Table (Narrative Chronicles, Context, Stances)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id TEXT PRIMARY KEY,
-            topic TEXT NOT NULL,
-            title TEXT NOT NULL,
-            period TEXT,
-            status TEXT DEFAULT 'active',
-            narrative TEXT NOT NULL,
-            entities TEXT,
-            stance TEXT,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
-            id, topic, title, narrative, entities, stance, keywords
-        );
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_episodes_ai AFTER INSERT ON episodes BEGIN
-            INSERT INTO episodes_fts (id, topic, title, narrative, entities, stance, keywords)
-            VALUES (new.id, new.topic, new.title, new.narrative, new.entities, new.stance, new.keywords);
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_episodes_ad AFTER DELETE ON episodes BEGIN
-            DELETE FROM episodes_fts WHERE id = old.id;
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_episodes_au AFTER UPDATE ON episodes BEGIN
-            DELETE FROM episodes_fts WHERE id = old.id;
-            INSERT INTO episodes_fts (id, topic, title, narrative, entities, stance, keywords)
-            VALUES (new.id, new.topic, new.title, new.narrative, new.entities, new.stance, new.keywords);
-        END;
-    """)
-
-    # 3. Learnings Table (Experiential Heuristics, Practical Insights)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS learnings (
-            id TEXT PRIMARY KEY,
-            category TEXT,
-            insight TEXT NOT NULL,
-            context TEXT,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
-            id, category, insight, context, keywords
-        );
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_learnings_ai AFTER INSERT ON learnings BEGIN
-            INSERT INTO learnings_fts (id, category, insight, context, keywords)
-            VALUES (new.id, new.category, new.insight, new.context, new.keywords);
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_learnings_ad AFTER DELETE ON learnings BEGIN
-            DELETE FROM learnings_fts WHERE id = old.id;
-        END;
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_learnings_au AFTER UPDATE ON learnings BEGIN
-            DELETE FROM learnings_fts WHERE id = old.id;
-            INSERT INTO learnings_fts (id, category, insight, context, keywords)
-            VALUES (new.id, new.category, new.insight, new.context, new.keywords);
-        END;
-    """)
-
-    try:
-        yield conn
-    finally:
-        conn.close()
-
 def get_existing_database_inventory() -> dict:
+    """Retrieve the full inventory of existing keys/IDs across all three layers."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM memories")
@@ -214,6 +96,7 @@ def discover_and_cache_latest_flash_low_model() -> str:
     return DEFAULT_MODEL
 
 def is_trivial_prompt(text: str) -> bool:
+    """Check if a prompt is too trivial to warrant memory processing."""
     if not text or not text.strip():
         return True
     stripped = text.strip()
@@ -244,6 +127,7 @@ def get_all_vocabulary(cursor) -> set:
     return vocab
 
 def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_learnings: int = 2):
+    """Multi-layer prefetch: always loads preferences, then FTS-matches facts, episodes, learnings."""
     if is_trivial_prompt(query):
         return
 
@@ -272,7 +156,7 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
             fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
             fts_query = " OR ".join(fts_terms)
 
-            # Query Memories FTS
+            # Query Memories FTS via JOIN
             try:
                 cursor.execute("""
                     SELECT m.id, m.category, m.fact 
@@ -394,6 +278,7 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
                     print(f"• {prefix}{insight}{ctx_str}")
 
 def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
+    """Insert or update an atomic fact in the memories table."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -408,6 +293,7 @@ def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
         conn.commit()
 
 def upsert_episode(episode_id: str, topic: str, title: str, narrative: str, period: str = "", status: str = "active", entities: str = "", stance: str = "", keywords: str = ""):
+    """Insert or update a narrative chronicle/episode."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -427,6 +313,7 @@ def upsert_episode(episode_id: str, topic: str, title: str, narrative: str, peri
         conn.commit()
 
 def upsert_learning(learning_id: str, category: str, insight: str, context: str = "", keywords: str = ""):
+    """Insert or update an experiential learning/heuristic."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -442,6 +329,7 @@ def upsert_learning(learning_id: str, category: str, insight: str, context: str 
         conn.commit()
 
 def list_all():
+    """Print a formatted overview of all stored facts, episodes, and learnings."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, category, fact FROM memories ORDER BY category, id")
@@ -475,7 +363,54 @@ def list_all():
             ctx = f" (Context: {context})" if context else ""
             print(f"{lid:<25} | {(cat or ''):<12} | {insight}{ctx}")
 
-def sync_turn(user_prompt: str, assistant_response: str):
+def _is_protected_key(key_id: str) -> bool:
+    """Check if a key falls under a protected category (health, finance, etc.)."""
+    parts = key_id.split(".")
+    return any(part in PROTECTED_CATEGORIES for part in parts)
+
+def _get_existing_value(key_id: str, table: str) -> dict | None:
+    """Retrieve existing entry from a table by ID for diff comparison."""
+    with db_session() as conn:
+        cursor = conn.cursor()
+        if table == "memories":
+            cursor.execute("SELECT id, category, fact, keywords FROM memories WHERE id = ?", (key_id,))
+            row = cursor.fetchone()
+            return {"id": row[0], "category": row[1], "fact": row[2], "keywords": row[3]} if row else None
+        elif table == "episodes":
+            cursor.execute("SELECT id, topic, title, period, status, narrative, entities, stance, keywords FROM episodes WHERE id = ?", (key_id,))
+            row = cursor.fetchone()
+            return {"id": row[0], "topic": row[1], "title": row[2], "period": row[3], "status": row[4], "narrative": row[5], "entities": row[6], "stance": row[7], "keywords": row[8]} if row else None
+        elif table == "learnings":
+            cursor.execute("SELECT id, category, insight, context, keywords FROM learnings WHERE id = ?", (key_id,))
+            row = cursor.fetchone()
+            return {"id": row[0], "category": row[1], "insight": row[2], "context": row[3], "keywords": row[4]} if row else None
+    return None
+
+def _format_diff(old: dict | None, new: dict, label: str) -> str:
+    """Format a human-readable diff between old and new values."""
+    if old is None:
+        return f"  [NEW] {label}: {new.get('id', '?')}"
+    
+    changes = []
+    for key in new:
+        old_val = old.get(key, "")
+        new_val = new.get(key, "")
+        if str(old_val) != str(new_val):
+            changes.append(f"    {key}: \"{old_val}\" → \"{new_val}\"")
+    
+    if changes:
+        protected_marker = " 🔒 PROTECTED" if _is_protected_key(new.get("id", "")) else ""
+        return f"  [UPDATE{protected_marker}] {label}: {new.get('id', '?')}\n" + "\n".join(changes)
+    return ""
+
+def sync_turn(user_prompt: str, assistant_response: str, dry_run: bool = False):
+    """Extract persistent information from a conversation turn and sync to memory.
+    
+    Args:
+        user_prompt: The user's message text.
+        assistant_response: The assistant's response text.
+        dry_run: If True, only show what would change without writing to DB.
+    """
     if is_trivial_prompt(user_prompt):
         return
 
@@ -569,14 +504,45 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
         try:
             data = json.loads(json_match.group(0))
             if isinstance(data, dict):
-                # Facts
+                diff_lines = []
+                skipped_protected = []
+
+                # --- Facts ---
                 for f in data.get("facts", []):
                     if isinstance(f, dict) and "id" in f and "fact" in f:
+                        existing = _get_existing_value(f["id"], "memories")
+                        diff = _format_diff(existing, f, "Fact")
+                        if diff:
+                            diff_lines.append(diff)
+                        
+                        if dry_run:
+                            continue
+                        
+                        # Protected category guard: skip updates to existing protected entries
+                        if existing and _is_protected_key(f["id"]):
+                            skipped_protected.append(f["id"])
+                            sys.stderr.write(f"[PROTECTED] Skipping update to protected fact '{f['id']}' — use manual 'add' to update.\n")
+                            continue
+                        
                         upsert_fact(f["id"], f.get("category", "general"), f["fact"], f.get("keywords", ""))
                         print(f"Fact synced: {f['id']}")
-                # Episodes
+
+                # --- Episodes ---
                 for ep in data.get("episodes", []):
                     if isinstance(ep, dict) and "id" in ep and "narrative" in ep:
+                        existing = _get_existing_value(ep["id"], "episodes")
+                        diff = _format_diff(existing, ep, "Episode")
+                        if diff:
+                            diff_lines.append(diff)
+                        
+                        if dry_run:
+                            continue
+                        
+                        if existing and _is_protected_key(ep["id"]):
+                            skipped_protected.append(ep["id"])
+                            sys.stderr.write(f"[PROTECTED] Skipping update to protected episode '{ep['id']}' — use manual 'add-episode' to update.\n")
+                            continue
+                        
                         upsert_episode(
                             ep["id"],
                             ep.get("topic", "general"),
@@ -589,9 +555,18 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             keywords=ep.get("keywords", "")
                         )
                         print(f"Episode synced: {ep['id']}")
-                # Learnings
+
+                # --- Learnings ---
                 for lr in data.get("learnings", []):
                     if isinstance(lr, dict) and "id" in lr and "insight" in lr:
+                        existing = _get_existing_value(lr["id"], "learnings")
+                        diff = _format_diff(existing, lr, "Learning")
+                        if diff:
+                            diff_lines.append(diff)
+                        
+                        if dry_run:
+                            continue
+                        
                         upsert_learning(
                             lr["id"],
                             lr.get("category", "general"),
@@ -600,13 +575,31 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             keywords=lr.get("keywords", "")
                         )
                         print(f"Learning synced: {lr['id']}")
+
+                # Print diff summary
+                if dry_run and diff_lines:
+                    print("\n[DRY-RUN] Proposed changes:")
+                    for dl in diff_lines:
+                        print(dl)
+                    if not diff_lines:
+                        print("  (no changes detected)")
+                elif dry_run:
+                    print("[DRY-RUN] No changes detected.")
+
+                if skipped_protected:
+                    print(f"\n[INFO] {len(skipped_protected)} protected entry/entries skipped: {', '.join(skipped_protected)}")
+
         except json.JSONDecodeError as e:
             sys.stderr.write(f"JSON decode error during memory sync: {e}\n")
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
-def compact_all(apply_changes: bool = False):
-    """Compacts and optimizes all SQLite tables, runs VACUUM and rebuilds FTS indexes."""
+def optimize_db(apply_changes: bool = False):
+    """Rebuild FTS5 indexes, run VACUUM, and optionally archive resolved episodes.
+    
+    This replaces the old 'compact' command with a more honest name and
+    additional functionality for archiving stale entries.
+    """
     backup_dir = os.path.expanduser("~/.gemini/archive")
     os.makedirs(backup_dir, exist_ok=True)
     import datetime
@@ -616,35 +609,72 @@ def compact_all(apply_changes: bool = False):
     print(f"[BACKUP] Snapshot created: {backup_file}")
 
     with db_session() as conn:
+        cursor = conn.cursor()
+
+        # Report database stats
+        cursor.execute("SELECT COUNT(*) FROM memories")
+        n_facts = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM episodes")
+        n_episodes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM learnings")
+        n_learnings = cursor.fetchone()[0]
+        print(f"[STATS] Facts: {n_facts}, Episodes: {n_episodes}, Learnings: {n_learnings}")
+
+        # Check for facts without keywords (poorly searchable)
+        cursor.execute("SELECT id FROM memories WHERE keywords IS NULL OR keywords = ''")
+        no_kw_facts = [r[0] for r in cursor.fetchall()]
+        if no_kw_facts:
+            print(f"[WARN] {len(no_kw_facts)} facts without keywords (poorly searchable): {', '.join(no_kw_facts[:5])}{'...' if len(no_kw_facts) > 5 else ''}")
+
+        # Check for resolved/historic episodes older than 6 months
+        cursor.execute("""
+            SELECT id, title, status, updated_at FROM episodes 
+            WHERE status IN ('resolved', 'historic') 
+            AND updated_at < datetime('now', '-6 months')
+        """)
+        stale_episodes = cursor.fetchall()
+        if stale_episodes:
+            print(f"[INFO] {len(stale_episodes)} resolved/historic episodes older than 6 months:")
+            for eid, title, status, updated in stale_episodes:
+                print(f"  • {eid}: {title} [{status}] (last updated: {updated})")
+
+        # Rebuild FTS5 indexes
         print("[OPTIMIZE] Rebuilding FTS5 indexes...")
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
         conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild');")
         conn.execute("INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');")
         conn.commit()
 
+    # VACUUM must run outside the context manager (no active transactions)
     conn_raw = sqlite3.connect(DB_PATH)
     conn_raw.execute("VACUUM;")
     conn_raw.close()
-    print("[SUCCESS] All tables and indexes successfully rebuilt and vacuumed!")
+
+    db_size = os.path.getsize(DB_PATH)
+    print(f"[SUCCESS] Optimized! DB size: {db_size:,} bytes ({db_size / 1024:.1f} KB)")
+
+# Keep backward compatibility alias
+compact_all = optimize_db
 
 def main():
     parser = argparse.ArgumentParser(description="AGY Multi-Layer Cognitive Memory Engine")
     subparsers = parser.add_subparsers(dest="command")
 
-    pf = subparsers.add_parser("prefetch")
+    pf = subparsers.add_parser("prefetch", help="Multi-layer FTS5 prefetch for a query")
     pf.add_argument("query", type=str, help="User query text")
 
-    st = subparsers.add_parser("sync-turn")
+    st = subparsers.add_parser("sync-turn", help="Extract & sync persistent info from a conversation turn")
     st.add_argument("--user", type=str, required=True)
     st.add_argument("--assistant", type=str, required=True)
+    st.add_argument("--dry-run", action="store_true", help="Show proposed changes without writing to DB")
 
-    ad = subparsers.add_parser("add")
+    ad = subparsers.add_parser("add", help="Manually add/update an atomic fact")
     ad.add_argument("--id", type=str, required=True)
     ad.add_argument("--category", type=str, default="general")
     ad.add_argument("--fact", type=str, required=True)
     ad.add_argument("--keywords", type=str, default="")
 
-    ae = subparsers.add_parser("add-episode")
+    ae = subparsers.add_parser("add-episode", help="Manually add/update a narrative chronicle")
     ae.add_argument("--id", type=str, required=True)
     ae.add_argument("--topic", type=str, required=True)
     ae.add_argument("--title", type=str, required=True)
@@ -655,24 +685,28 @@ def main():
     ae.add_argument("--stance", type=str, default="")
     ae.add_argument("--keywords", type=str, default="")
 
-    al = subparsers.add_parser("add-learning")
+    al = subparsers.add_parser("add-learning", help="Manually add/update an experiential learning")
     al.add_argument("--id", type=str, required=True)
     al.add_argument("--category", type=str, default="general")
     al.add_argument("--insight", type=str, required=True)
     al.add_argument("--context", type=str, default="")
     al.add_argument("--keywords", type=str, default="")
 
-    cp = subparsers.add_parser("compact")
-    cp.add_argument("--apply", action="store_true", help="Apply compaction changes")
+    op = subparsers.add_parser("optimize", help="Rebuild FTS indexes, VACUUM, report stats & warnings")
+    op.add_argument("--apply", action="store_true", help="Apply optimization (always applies, flag kept for compat)")
 
-    subparsers.add_parser("list")
+    # Keep backward compatibility
+    cp = subparsers.add_parser("compact", help="(Alias for 'optimize') Rebuild FTS indexes & VACUUM")
+    cp.add_argument("--apply", action="store_true")
+
+    subparsers.add_parser("list", help="List all stored facts, episodes, and learnings")
 
     args = parser.parse_args()
 
     if args.command == "prefetch":
         prefetch(args.query)
     elif args.command == "sync-turn":
-        sync_turn(args.user, args.assistant)
+        sync_turn(args.user, args.assistant, dry_run=args.dry_run)
     elif args.command == "add":
         upsert_fact(args.id, args.category, args.fact, args.keywords)
         print(f"Added fact {args.id}")
@@ -682,8 +716,8 @@ def main():
     elif args.command == "add-learning":
         upsert_learning(args.id, args.category, args.insight, args.context, args.keywords)
         print(f"Added learning {args.id}")
-    elif args.command == "compact":
-        compact_all(apply_changes=args.apply)
+    elif args.command in ("compact", "optimize"):
+        optimize_db(apply_changes=getattr(args, 'apply', True))
     elif args.command == "list":
         list_all()
     else:

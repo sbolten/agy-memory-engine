@@ -4,76 +4,13 @@ AGY Memory Engine - MCP Server Layer (FastMCP)
 Allows AGY to explicitly query, store, and manage multi-layer memories (Facts, Episodes, Learnings).
 """
 
-import sys
 import json
-import sqlite3
-import os
-from typing import Optional, List, Dict, Any
-from contextlib import contextmanager
 from mcp.server.fastmcp import FastMCP
+
+from schema import db_session
 
 mcp = FastMCP("memory")
 
-DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
-
-@contextmanager
-def db_session():
-    """Ensure directory exists and manage SQLite connection lifecycle cleanly."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            category TEXT,
-            fact TEXT NOT NULL,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            id, category, fact, keywords
-        );
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id TEXT PRIMARY KEY,
-            topic TEXT NOT NULL,
-            title TEXT NOT NULL,
-            period TEXT,
-            status TEXT DEFAULT 'active',
-            narrative TEXT NOT NULL,
-            entities TEXT,
-            stance TEXT,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
-            id, topic, title, narrative, entities, stance, keywords
-        );
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS learnings (
-            id TEXT PRIMARY KEY,
-            category TEXT,
-            insight TEXT NOT NULL,
-            context TEXT,
-            keywords TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
-            id, category, insight, context, keywords
-        );
-    """)
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 @mcp.tool()
 def search_memory(query: str, limit: int = 5) -> str:
@@ -91,17 +28,25 @@ def search_memory(query: str, limit: int = 5) -> str:
         with db_session() as conn:
             cursor = conn.cursor()
             
-            # Facts
+            # Facts via JOIN (ranked by relevance)
             cursor.execute("""
-                SELECT id, category, fact FROM memories_fts 
-                WHERE memories_fts MATCH ? LIMIT ?
+                SELECT m.id, m.category, m.fact 
+                FROM memories m
+                JOIN memories_fts f ON m.id = f.id
+                WHERE memories_fts MATCH ?
+                ORDER BY f.rank
+                LIMIT ?
             """, (fts_query, limit))
             facts = [{"type": "fact", "id": r[0], "category": r[1], "content": r[2]} for r in cursor.fetchall()]
 
-            # Episodes
+            # Episodes via JOIN (ranked by relevance)
             cursor.execute("""
-                SELECT id, topic, title, period, status, narrative, stance FROM episodes_fts 
-                WHERE episodes_fts MATCH ? LIMIT ?
+                SELECT e.id, e.topic, e.title, e.period, e.status, e.narrative, e.stance
+                FROM episodes e
+                JOIN episodes_fts f ON e.id = f.id
+                WHERE episodes_fts MATCH ?
+                ORDER BY f.rank
+                LIMIT ?
             """, (fts_query, limit))
             episodes = [{
                 "type": "episode",
@@ -114,10 +59,14 @@ def search_memory(query: str, limit: int = 5) -> str:
                 "stance": r[6]
             } for r in cursor.fetchall()]
 
-            # Learnings
+            # Learnings via JOIN (ranked by relevance)
             cursor.execute("""
-                SELECT id, category, insight, context FROM learnings_fts 
-                WHERE learnings_fts MATCH ? LIMIT ?
+                SELECT l.id, l.category, l.insight, l.context
+                FROM learnings l
+                JOIN learnings_fts f ON l.id = f.id
+                WHERE learnings_fts MATCH ?
+                ORDER BY f.rank
+                LIMIT ?
             """, (fts_query, limit))
             learnings = [{
                 "type": "learning",
