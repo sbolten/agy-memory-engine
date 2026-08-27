@@ -4,6 +4,8 @@ AGY Memory Engine - Multi-Layer Cognitive Memory Component
 - Layer 1: Semantic Fact-Store (SQLite FTS5: IPs, configs, hardware, master data)
 - Layer 2: Narrative & Episodic Store (Themen-Dossiers, Chroniken, Beziehungsdynamiken, Verläufe)
 - Layer 3: Experiential & Learnings Store (Erkenntnisse, Heuristiken, Urteile, Haltungen)
+- Feature: Entity Graph & Relationships (Entity Linking)
+- Feature: Automatic Episode Aging & State Decay (active -> cooling -> historic)
 """
 
 import sys
@@ -15,11 +17,12 @@ import re
 import subprocess
 import json
 import difflib
+import datetime
 from contextlib import contextmanager
 
 from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
 DEFAULT_MODEL = "gemini-3.7-flash-high"
@@ -50,19 +53,22 @@ TRIVIAL_PROMPT_RE = re.compile(
 )
 
 def get_existing_database_inventory() -> dict:
-    """Retrieve the full inventory of existing keys/IDs across all three layers."""
+    """Retrieve the full inventory of existing keys/IDs across all three layers and entity links."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM memories")
         fact_keys = [row[0] for row in cursor.fetchall()]
-        cursor.execute("SELECT id, title, topic FROM episodes")
-        episode_keys = [{"id": row[0], "title": row[1], "topic": row[2]} for row in cursor.fetchall()]
+        cursor.execute("SELECT id, title, topic, status FROM episodes")
+        episode_keys = [{"id": row[0], "title": row[1], "topic": row[2], "status": row[3]} for row in cursor.fetchall()]
         cursor.execute("SELECT id, category FROM learnings")
         learning_keys = [{"id": row[0], "category": row[1]} for row in cursor.fetchall()]
+        cursor.execute("SELECT source_id, target_id, relation FROM entity_links")
+        link_keys = [{"source": row[0], "target": row[1], "relation": row[2]} for row in cursor.fetchall()]
         return {
             "fact_keys": fact_keys,
             "episodes": episode_keys,
-            "learnings": learning_keys
+            "learnings": learning_keys,
+            "entity_links": link_keys
         }
 
 def get_cached_model() -> str:
@@ -126,10 +132,91 @@ def get_all_vocabulary(cursor) -> set:
         tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
         vocab.update(tokens)
 
+    cursor.execute("SELECT source_id, target_id, relation FROM entity_links")
+    for row in cursor.fetchall():
+        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', f"{row[0]} {row[1]} {row[2]}".lower())
+        vocab.update(tokens)
+
     return vocab
 
+def link_entities(source_id: str, target_id: str, relation: str):
+    """Create or update a directional entity link / relationship."""
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO entity_links (source_id, target_id, relation)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source_id, target_id, relation) DO NOTHING;
+        """, (source_id.strip(), target_id.strip(), relation.strip()))
+        conn.commit()
+
+def unlink_entities(source_id: str, target_id: str, relation: str = None):
+    """Remove entity link(s) between two IDs."""
+    with db_session() as conn:
+        cursor = conn.cursor()
+        if relation:
+            cursor.execute("DELETE FROM entity_links WHERE source_id = ? AND target_id = ? AND relation = ?", (source_id, target_id, relation))
+        else:
+            cursor.execute("DELETE FROM entity_links WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)", (source_id, target_id, target_id, source_id))
+        conn.commit()
+
+def list_entity_links(entity_id: str = None) -> list:
+    """Retrieve entity links, optionally filtered by entity."""
+    with db_session() as conn:
+        cursor = conn.cursor()
+        if entity_id:
+            cursor.execute("""
+                SELECT source_id, target_id, relation FROM entity_links
+                WHERE source_id = ? OR target_id = ?
+                ORDER BY source_id, target_id
+            """, (entity_id, entity_id))
+        else:
+            cursor.execute("SELECT source_id, target_id, relation FROM entity_links ORDER BY source_id, target_id")
+        return cursor.fetchall()
+
+def age_episodes(days_to_cooling: int = 30, days_to_historic: int = 90) -> dict:
+    """Evaluate and transition episode lifecycles based on updated_at age:
+    - 'active' -> 'cooling' if not updated for > days_to_cooling (default: 30 days)
+    - 'cooling' -> 'historic' if not updated for > days_to_historic (default: 90 days)
+    - 'resolved' remains 'resolved'.
+    """
+    cooled = []
+    historied = []
+    with db_session() as conn:
+        cursor = conn.cursor()
+        
+        # 1. active -> cooling
+        cursor.execute("""
+            SELECT id, title, updated_at FROM episodes
+            WHERE status = 'active'
+            AND updated_at < datetime('now', '-' || ? || ' days')
+        """, (days_to_cooling,))
+        to_cool = cursor.fetchall()
+        for eid, title, updated in to_cool:
+            cursor.execute("UPDATE episodes SET status = 'cooling' WHERE id = ?", (eid,))
+            cooled.append((eid, title, updated))
+
+        # 2. cooling -> historic
+        cursor.execute("""
+            SELECT id, title, updated_at FROM episodes
+            WHERE status = 'cooling'
+            AND updated_at < datetime('now', '-' || ? || ' days')
+        """, (days_to_historic,))
+        to_historic = cursor.fetchall()
+        for eid, title, updated in to_historic:
+            cursor.execute("UPDATE episodes SET status = 'historic' WHERE id = ?", (eid,))
+            historied.append((eid, title, updated))
+
+        conn.commit()
+
+    return {"cooled": cooled, "historied": historied}
+
 def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_learnings: int = 2):
-    """Multi-layer prefetch: always loads preferences, then FTS-matches facts, episodes, learnings."""
+    """Multi-layer prefetch with:
+    1. Persistent preferences & rules (Layer 1)
+    2. FTS5 exact + typo fuzzy search (Facts, Episodes with status weighting, Learnings)
+    3. Entity Graph Expansion (1-hop linked facts/episodes/learnings)
+    """
     if is_trivial_prompt(query):
         return
 
@@ -145,6 +232,8 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
         """)
         pref_rows = cursor.fetchall()
         seen_fact_ids = {r[0] for r in pref_rows}
+        seen_episode_ids = set()
+        seen_learning_ids = set()
 
         # 2. Extract search terms
         raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
@@ -177,17 +266,25 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
             except sqlite3.OperationalError:
                 fact_rows = []
 
-            # Query Episodes FTS via JOIN
+            # Query Episodes FTS via JOIN (with Status Aging Weighting: active > cooling > historic/resolved)
             try:
                 cursor.execute("""
                     SELECT e.id, e.topic, e.title, e.period, e.status, e.narrative, e.entities, e.stance 
                     FROM episodes e
                     JOIN episodes_fts f ON e.id = f.id
                     WHERE episodes_fts MATCH ?
-                    ORDER BY f.rank
+                    ORDER BY 
+                        CASE e.status 
+                            WHEN 'active' THEN 1 
+                            WHEN 'cooling' THEN 2 
+                            ELSE 3 
+                        END ASC,
+                        f.rank ASC
                     LIMIT ?;
                 """, (fts_query, limit_episodes))
-                episode_rows = cursor.fetchall()
+                for r in cursor.fetchall():
+                    episode_rows.append(r)
+                    seen_episode_ids.add(r[0])
             except sqlite3.OperationalError:
                 episode_rows = []
 
@@ -201,7 +298,9 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
                     ORDER BY f.rank
                     LIMIT ?;
                 """, (fts_query, limit_learnings))
-                learning_rows = cursor.fetchall()
+                for r in cursor.fetchall():
+                    learning_rows.append(r)
+                    seen_learning_ids.add(r[0])
             except sqlite3.OperationalError:
                 learning_rows = []
 
@@ -244,16 +343,51 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
                             FROM episodes e
                             JOIN episodes_fts f ON e.id = f.id
                             WHERE episodes_fts MATCH ?
-                            ORDER BY f.rank
+                            ORDER BY 
+                                CASE e.status 
+                                    WHEN 'active' THEN 1 
+                                    WHEN 'cooling' THEN 2 
+                                    ELSE 3 
+                                END ASC,
+                                f.rank ASC
                             LIMIT ?;
                         """, (fuzzy_fts, limit_episodes))
-                        episode_rows = cursor.fetchall()
+                        for r in cursor.fetchall():
+                            if r[0] not in seen_episode_ids:
+                                episode_rows.append(r)
+                                seen_episode_ids.add(r[0])
                     except sqlite3.OperationalError:
                         pass
 
+            # 3. Entity Graph Expansion (1-hop Linked Entities)
+            matched_ids = list(seen_fact_ids | seen_episode_ids | seen_learning_ids)
+            linked_context = []
+            if matched_ids:
+                placeholders = ",".join("?" * len(matched_ids))
+                cursor.execute(f"""
+                    SELECT source_id, target_id, relation FROM entity_links
+                    WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})
+                    LIMIT 5
+                """, matched_ids + matched_ids)
+                links = cursor.fetchall()
+                for src, tgt, rel in links:
+                    linked_target = tgt if src in matched_ids else src
+                    if linked_target not in seen_fact_ids and linked_target not in seen_episode_ids:
+                        cursor.execute("SELECT id, category, fact FROM memories WHERE id = ?", (linked_target,))
+                        mf = cursor.fetchone()
+                        if mf:
+                            linked_context.append(f"Linked Fact via '{rel}': ({mf[1]}) {mf[2]}")
+                            seen_fact_ids.add(mf[0])
+                        else:
+                            cursor.execute("SELECT id, title, status, narrative FROM episodes WHERE id = ?", (linked_target,))
+                            me = cursor.fetchone()
+                            if me:
+                                linked_context.append(f"Linked Episode via '{rel}': [{me[1]} | {me[2]}] {me[3]}")
+                                seen_episode_ids.add(me[0])
+
         # Output Generation
         total_facts = pref_rows + fact_rows
-        if total_facts or episode_rows or learning_rows:
+        if total_facts or episode_rows or learning_rows or (words and 'linked_context' in locals() and linked_context):
             if total_facts:
                 print("[🧠 Memory Context - Facts]")
                 for _, cat, fact in total_facts:
@@ -278,6 +412,11 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
                     prefix = f"({cat}) " if cat else ""
                     ctx_str = f" [Kontext: {context}]" if context else ""
                     print(f"• {prefix}{insight}{ctx_str}")
+
+            if 'linked_context' in locals() and linked_context:
+                print("\n[🔗 Linked Entity Relations]")
+                for lc in linked_context:
+                    print(f"• {lc}")
 
 def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
     """Insert or update an atomic fact in the memories table."""
@@ -331,7 +470,7 @@ def upsert_learning(learning_id: str, category: str, insight: str, context: str 
         conn.commit()
 
 def list_all():
-    """Print a formatted overview of all stored facts, episodes, and learnings."""
+    """Print a formatted overview of all stored facts, episodes, learnings, and entity relations."""
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, category, fact FROM memories ORDER BY category, id")
@@ -340,6 +479,8 @@ def list_all():
         episodes = cursor.fetchall()
         cursor.execute("SELECT id, category, insight, context FROM learnings ORDER BY category, id")
         learnings = cursor.fetchall()
+        cursor.execute("SELECT source_id, target_id, relation FROM entity_links ORDER BY source_id, target_id")
+        links = cursor.fetchall()
 
         print("=" * 80)
         print(f"SEMANTIC FACTS ({len(facts)})")
@@ -364,6 +505,12 @@ def list_all():
         for lid, cat, insight, context in learnings:
             ctx = f" (Context: {context})" if context else ""
             print(f"{lid:<25} | {(cat or ''):<12} | {insight}{ctx}")
+
+        print("\n" + "=" * 80)
+        print(f"ENTITY GRAPH LINKS & RELATIONS ({len(links)})")
+        print("=" * 80)
+        for src, tgt, rel in links:
+            print(f"{src:<30} --[{rel}]--> {tgt}")
 
 def _is_protected_key(key_id: str) -> bool:
     """Check if a key falls under a protected category (health, finance, etc.)."""
@@ -441,11 +588,13 @@ def _sync_turn_inner(user_prompt: str, assistant_response: str, dry_run: bool = 
     inv_context = json.dumps(inv, ensure_ascii=False, indent=2)
 
     prompt = f"""You are the Multi-Layer Cognitive Memory Engine for Stephan Bolten.
-Analyze the conversation turn below and extract any persistent information across THREE distinct layers:
+Analyze the conversation turn below and extract any persistent information across distinct layers and relations:
 
 1. ATOMIC FACTS ("facts"): Hard facts, IP addresses, specs, master data, device IDs, account names, medications, configuration parameters, definite dates.
 2. NARRATIVE CHRONICLES & EPISODES ("episodes"): Background histories, disputes, social/relationship dynamics, sentiment/stances towards people/topics, multi-event story arcs, context over time.
+   - Status: "active" (ongoing), "cooling" (cooling down), "historic" (concluded past), "resolved" (fixed/completed).
 3. EXPERIENTIAL LEARNINGS ("learnings"): Practical insights, rules of thumb, lessons learned from past actions, subjective opinions or tested heuristics.
+4. ENTITY LINKS ("entity_links"): Relationships between entities, hardware, services, people, or topics (e.g. source: "infra.beelink", target: "service.immich", relation: "hosts").
 
 Existing Database Keys & Topics:
 {inv_context}
@@ -460,7 +609,7 @@ RULES:
 User: {user_prompt}
 Assistant: {assistant_response}
 
-Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "episodes":[], "learnings":[]}} if none):
+Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "episodes":[], "learnings":[], "entity_links":[]}} if none):
 {{
   "facts": [
     {{
@@ -476,7 +625,7 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
       "topic": "...",
       "title": "...",
       "period": "...",
-      "status": "active|historic|resolved",
+      "status": "active|cooling|historic|resolved",
       "narrative": "...",
       "entities": "...",
       "stance": "...",
@@ -490,6 +639,13 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
       "insight": "...",
       "context": "...",
       "keywords": "..."
+    }}
+  ],
+  "entity_links": [
+    {{
+      "source": "...",
+      "target": "...",
+      "relation": "..."
     }}
   ]
 }}
@@ -599,6 +755,15 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                         )
                         print(f"Learning synced: {lr['id']}")
 
+                # --- Entity Links ---
+                for el in data.get("entity_links", []):
+                    if isinstance(el, dict) and "source" in el and "target" in el and "relation" in el:
+                        if dry_run:
+                            diff_lines.append(f"  [NEW] Entity Link: {el['source']} --[{el['relation']}]--> {el['target']}")
+                            continue
+                        link_entities(el["source"], el["target"], el["relation"])
+                        print(f"Entity link synced: {el['source']} -> {el['target']}")
+
                 # Print diff summary
                 if dry_run and diff_lines:
                     print("\n[DRY-RUN] Proposed changes:")
@@ -617,19 +782,25 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
-def optimize_db(apply_changes: bool = False):
-    """Rebuild FTS5 indexes, run VACUUM, and optionally archive resolved episodes.
-    
-    This replaces the old 'compact' command with a more honest name and
-    additional functionality for archiving stale entries.
-    """
+def optimize_db(apply_changes: bool = False, age_decay: bool = True):
+    """Rebuild FTS5 indexes, execute automatic episode aging, run VACUUM, and report stats."""
     backup_dir = os.path.expanduser("~/.gemini/archive")
     os.makedirs(backup_dir, exist_ok=True)
-    import datetime
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     backup_file = os.path.join(backup_dir, f"memory_db_backup_{ts}.bak")
     shutil.copy2(DB_PATH, backup_file)
     print(f"[BACKUP] Snapshot created: {backup_file}")
+
+    if age_decay:
+        aging_res = age_episodes(days_to_cooling=30, days_to_historic=90)
+        if aging_res["cooled"]:
+            print(f"[AGING] {len(aging_res['cooled'])} episode(s) transitioned active -> cooling:")
+            for eid, title, upd in aging_res["cooled"]:
+                print(f"  • {eid}: {title} (last update: {upd})")
+        if aging_res["historied"]:
+            print(f"[AGING] {len(aging_res['historied'])} episode(s) transitioned cooling -> historic:")
+            for eid, title, upd in aging_res["historied"]:
+                print(f"  • {eid}: {title} (last update: {upd})")
 
     with db_session() as conn:
         cursor = conn.cursor()
@@ -641,7 +812,9 @@ def optimize_db(apply_changes: bool = False):
         n_episodes = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM learnings")
         n_learnings = cursor.fetchone()[0]
-        print(f"[STATS] Facts: {n_facts}, Episodes: {n_episodes}, Learnings: {n_learnings}")
+        cursor.execute("SELECT COUNT(*) FROM entity_links")
+        n_links = cursor.fetchone()[0]
+        print(f"[STATS] Facts: {n_facts}, Episodes: {n_episodes}, Learnings: {n_learnings}, Entity Links: {n_links}")
 
         # Check for facts without keywords (poorly searchable)
         cursor.execute("SELECT id FROM memories WHERE keywords IS NULL OR keywords = ''")
@@ -666,6 +839,7 @@ def optimize_db(apply_changes: bool = False):
         conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
         conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild');")
         conn.execute("INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO entity_links_fts(entity_links_fts) VALUES('rebuild');")
         conn.commit()
 
     # VACUUM must run outside the context manager (no active transactions)
@@ -684,7 +858,7 @@ def main():
     parser.add_argument("--version", "-v", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    pf = subparsers.add_parser("prefetch", help="Multi-layer FTS5 prefetch for a query")
+    pf = subparsers.add_parser("prefetch", help="Multi-layer FTS5 prefetch for a query with entity linking & status weighting")
     pf.add_argument("query", type=str, help="User query text")
 
     st = subparsers.add_parser("sync-turn", help="Extract & sync persistent info from a conversation turn")
@@ -704,7 +878,7 @@ def main():
     ae.add_argument("--title", type=str, required=True)
     ae.add_argument("--narrative", type=str, required=True)
     ae.add_argument("--period", type=str, default="")
-    ae.add_argument("--status", type=str, default="active")
+    ae.add_argument("--status", type=str, default="active", choices=["active", "cooling", "historic", "resolved"])
     ae.add_argument("--entities", type=str, default="")
     ae.add_argument("--stance", type=str, default="")
     ae.add_argument("--keywords", type=str, default="")
@@ -716,14 +890,31 @@ def main():
     al.add_argument("--context", type=str, default="")
     al.add_argument("--keywords", type=str, default="")
 
-    op = subparsers.add_parser("optimize", help="Rebuild FTS indexes, VACUUM, report stats & warnings")
-    op.add_argument("--apply", action="store_true", help="Apply optimization (always applies, flag kept for compat)")
+    # Entity link CLI commands
+    lk = subparsers.add_parser("link", help="Create a relationship link between two entities / memory IDs")
+    lk.add_argument("--source", type=str, required=True, help="Source memory ID or entity")
+    lk.add_argument("--target", type=str, required=True, help="Target memory ID or entity")
+    lk.add_argument("--relation", type=str, required=True, help="Relationship type (e.g. 'hosts', 'member_of', 'depends_on', 'owns')")
+
+    unlk = subparsers.add_parser("unlink", help="Remove relationship link between two entities")
+    unlk.add_argument("--source", type=str, required=True)
+    unlk.add_argument("--target", type=str, required=True)
+    unlk.add_argument("--relation", type=str, default=None)
+
+    # Episode aging CLI command
+    ag = subparsers.add_parser("age-episodes", help="Run automatic state decay for episodes (active -> cooling -> historic)")
+    ag.add_argument("--days-to-cooling", type=int, default=30)
+    ag.add_argument("--days-to-historic", type=int, default=90)
+
+    op = subparsers.add_parser("optimize", help="Run episode aging, rebuild FTS indexes, VACUUM, report stats")
+    op.add_argument("--apply", action="store_true", help="Apply optimization")
+    op.add_argument("--no-age", action="store_true", help="Skip episode aging")
 
     # Keep backward compatibility
     cp = subparsers.add_parser("compact", help="(Alias for 'optimize') Rebuild FTS indexes & VACUUM")
     cp.add_argument("--apply", action="store_true")
 
-    subparsers.add_parser("list", help="List all stored facts, episodes, and learnings")
+    subparsers.add_parser("list", help="List all stored facts, episodes, learnings, and entity links")
 
     args = parser.parse_args()
 
@@ -740,8 +931,17 @@ def main():
     elif args.command == "add-learning":
         upsert_learning(args.id, args.category, args.insight, args.context, args.keywords)
         print(f"Added learning {args.id}")
+    elif args.command == "link":
+        link_entities(args.source, args.target, args.relation)
+        print(f"Linked: {args.source} --[{args.relation}]--> {args.target}")
+    elif args.command == "unlink":
+        unlink_entities(args.source, args.target, args.relation)
+        print(f"Unlinked: {args.source} <-> {args.target}")
+    elif args.command == "age-episodes":
+        res = age_episodes(args.days_to_cooling, args.days_to_historic)
+        print(f"Cooled: {len(res['cooled'])}, Historic: {len(res['historied'])}")
     elif args.command in ("compact", "optimize"):
-        optimize_db(apply_changes=getattr(args, 'apply', True))
+        optimize_db(apply_changes=getattr(args, 'apply', True), age_decay=not getattr(args, 'no_age', False))
     elif args.command == "list":
         list_all()
     else:

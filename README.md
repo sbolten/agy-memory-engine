@@ -111,13 +111,15 @@ Embedding every message turn or background sync consumes embedding API credits o
 ## 🌟 Key Features
 
 - **⚡ Blazing Fast Retrieval (<2ms):** Uses native SQLite FTS5 full-text indexing with BM25 ranking across all 3 cognitive layers.
+- **🔗 Entity Graph & Relationship Linking:** Connects memory entities with directional semantic links (e.g. `service.immich` --[hosted_on]--> `infra.beelink`) with automated 1-hop multi-entity expansion during prefetch.
+- **⏳ Automatic Episode Aging & State Decay:** Automatically tracks chronical decay (`active` -> `cooling` after 30d -> `historic` after 90d) with status-aware relevance weighting in queries.
 - **🔍 Typo & Fuzzy Fallback:** Automatically handles misspelled terms and queries via `difflib` vocabulary matching.
 - **🌐 Multilingual & German/English Stopword Filtering:** Filters out conversational noise and matches keywords cross-lingually.
 - **🔒 Race-Condition Safe:** Embedded `fcntl.flock` file locking prevents parallel `sync-turn` executions during high-frequency turns.
 - **🧠 Zero External Dependencies:** Pure Python 3 standard library (`sqlite3`, `re`, `difflib`, `argparse`, `json`, `subprocess`).
 - **🔌 Dual Interface:**
-  - **CLI:** `prefetch`, `sync-turn`, `add`, `add-episode`, `add-learning`, `optimize`/`compact`, `list`, `--version`.
-  - **MCP Server:** Standard FastMCP Model Context Protocol (`agy_memory_mcp.py`) exposing `search_memory`, `store_memory`, `record_episode`, `record_learning`, and `list_memories`.
+  - **CLI:** `prefetch`, `sync-turn`, `add`, `add-episode`, `add-learning`, `link`, `unlink`, `age-episodes`, `optimize`/`compact`, `list`, `--version`.
+  - **MCP Server:** Standard FastMCP Model Context Protocol (`agy_memory_mcp.py`) exposing `search_memory`, `store_memory`, `record_episode`, `record_learning`, `link_entities_mcp`, and `list_memories`.
 - **⚙️ Configurable & Portable:** Database and cache paths configurable via environment variables (`AGY_MEMORY_DB`, `AGY_MEMORY_CACHE`, `AGY_BIN`).
 
 ---
@@ -128,36 +130,42 @@ Embedding every message turn or background sync consumes embedding API credits o
 - Python 3.10+ (standard library only, no `pip install` required)
 - Google Antigravity CLI (`agy`) installed in `$PATH` or `~/.local/bin/agy` (optional, needed for automated `sync-turn`)
 
-### 2. Manual Memory Management (CLI)
+### 2. Manual Memory & Entity Management (CLI)
 ```bash
 # Add Layer 1 Fact
-python3 agy_memory.py add --id "user.timezone" --category "preference" --fact "Timezone is UTC+1 (CET) / UTC+2 (CEST) Zurich" --keywords "timezone zeit zeitzone zurich"
+python3 agy_memory.py add --id "infra.beelink.ip" --category "infra" --fact "Beelink Host IP is 100.114.118.47" --keywords "beelink host server ip"
 
 # Add Layer 2 Episode / Dossier
-python3 agy_memory.py add-episode --id "project.nas_migration" --topic "infrastructure" --title "NAS Migration to TrueNAS" --narrative "Planning storage migration from OMV to TrueNAS SCALE." --keywords "nas truenas storage"
+python3 agy_memory.py add-episode --id "project.nas_migration" --topic "infrastructure" --title "NAS Migration to TrueNAS" --narrative "Planning storage migration from OMV to TrueNAS SCALE." --status "active" --keywords "nas truenas storage"
 
 # Add Layer 3 Learning / Heuristic
 python3 agy_memory.py add-learning --id "strategy.swiss_investing" --category "finance" --insight "For Swiss equity allocations, prefer CHF-hedged or local domestic funds to avoid FX drag." --keywords "finance investing chf funds"
 
-# List stored memories across all layers
+# Link Entities (Semantic Graph)
+python3 agy_memory.py link --source "service.immich" --target "infra.beelink.ip" --relation "hosted_on"
+
+# List stored memories and entity relationships
 python3 agy_memory.py list
 
-# Query / Prefetch context for an upcoming prompt
-python3 agy_memory.py prefetch "Welche Server-IP hat das NAS und was ist bei CHF Anlagen zu beachten?"
+# Query / Prefetch context (automatically resolves linked entities & weights active episodes)
+python3 agy_memory.py prefetch "Wie lautet die IP für Immich?"
 ```
 
 ### 3. Dynamic Conversation Turn Syncing
-Pass user input and assistant response to extract and persist new facts, narrative milestones, and learnings asynchronously:
+Pass user input and assistant response to extract and persist new facts, narrative milestones, learnings, and entity relations asynchronously:
 ```bash
 python3 agy_memory.py sync-turn --user "Remember that our staging server IP changed to 192.168.1.150" --assistant "Understood, updated the staging IP."
 ```
 
-### 4. Database Optimization & Compaction (`optimize` / `compact`)
+### 4. Database Optimization & Lifecycle Maintenance (`optimize` / `age-episodes`)
 
-Over time, continuous background learning (`sync-turn`) can accumulate overlapping facts or fragmented notes.
+Over time, continuous background learning (`sync-turn`) can accumulate overlapping facts or stale episodes.
 
 ```bash
-# Optimize database, check keyword health, rebuild FTS5 indexes, and VACUUM SQLite
+# Run automatic episode aging (active -> cooling -> historic)
+python3 agy_memory.py age-episodes --days-to-cooling 30 --days-to-historic 90
+
+# Full optimization: executes episode decay, checks keyword health, rebuilds FTS5 indexes, and VACUUMs SQLite
 python3 agy_memory.py optimize
 ```
 

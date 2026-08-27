@@ -401,5 +401,91 @@ class TestSchemaInitOnce(unittest.TestCase):
                 conn.execute("SELECT 1")
 
 
+class TestEntityLinking(unittest.TestCase):
+    """Tests for Entity Graph Linking and Multi-hop Retrieval."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_link_and_list_entities(self):
+        """Test creating and listing directional entity links."""
+        agy_memory.link_entities("infra.beelink", "service.immich", "hosts")
+        agy_memory.link_entities("infra.beelink", "service.jellyfin", "hosts")
+        
+        links = agy_memory.list_entity_links("infra.beelink")
+        self.assertEqual(len(links), 2)
+        self.assertEqual(links[0], ("infra.beelink", "service.immich", "hosts"))
+
+    def test_unlink_entities(self):
+        """Test unlinking relations."""
+        agy_memory.link_entities("user.stephan", "device.fenix8", "owns")
+        self.assertEqual(len(agy_memory.list_entity_links("user.stephan")), 1)
+        
+        agy_memory.unlink_entities("user.stephan", "device.fenix8", "owns")
+        self.assertEqual(len(agy_memory.list_entity_links("user.stephan")), 0)
+
+    def test_prefetch_with_entity_expansion(self):
+        """Prefetching for a service pulls in linked host fact."""
+        agy_memory.upsert_fact("infra.beelink.ip", "infra", "Beelink IP 100.114.118.47", "beelink host server ip")
+        agy_memory.upsert_fact("service.immich.port", "infra", "Immich Port 2283", "immich photos port")
+        agy_memory.link_entities("service.immich.port", "infra.beelink.ip", "hosted_on")
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            agy_memory.prefetch("Wie lautet der Port von Immich?")
+        output = f.getvalue()
+
+        self.assertIn("Immich Port 2283", output)
+        self.assertIn("[🔗 Linked Entity Relations]", output)
+        self.assertIn("Beelink IP 100.114.118.47", output)
+
+
+class TestEpisodeAging(unittest.TestCase):
+    """Tests for Episode Aging and State Decay."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_episode_aging_transition(self):
+        """Test that old episodes transition active -> cooling -> historic."""
+        agy_memory.upsert_episode("ep.old_1", "travel", "Spain Trip", "Trip completed in June.", status="active")
+        agy_memory.upsert_episode("ep.old_2", "hardware", "TrueNAS Setup", "Setup cooled down.", status="cooling")
+
+        # Manually backdate updated_at in database
+        with schema.db_session(TEST_DB) as conn:
+            conn.execute("UPDATE episodes SET updated_at = datetime('now', '-35 days') WHERE id = 'ep.old_1'")
+            conn.execute("UPDATE episodes SET updated_at = datetime('now', '-95 days') WHERE id = 'ep.old_2'")
+            conn.commit()
+
+        res = agy_memory.age_episodes(days_to_cooling=30, days_to_historic=90)
+        self.assertEqual(len(res["cooled"]), 1)
+        self.assertEqual(res["cooled"][0][0], "ep.old_1")
+        self.assertEqual(len(res["historied"]), 1)
+        self.assertEqual(res["historied"][0][0], "ep.old_2")
+
+        # Verify status in database
+        with schema.db_session(TEST_DB) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM episodes WHERE id = 'ep.old_1'")
+            self.assertEqual(cursor.fetchone()[0], "cooling")
+            cursor.execute("SELECT status FROM episodes WHERE id = 'ep.old_2'")
+            self.assertEqual(cursor.fetchone()[0], "historic")
+
+
 if __name__ == "__main__":
     unittest.main()
+

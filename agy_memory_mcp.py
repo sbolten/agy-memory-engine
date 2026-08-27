@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AGY Memory Engine - MCP Server Layer (FastMCP)
-Allows AGY to explicitly query, store, and manage multi-layer memories (Facts, Episodes, Learnings).
+Allows AGY to explicitly query, store, link entities, and manage multi-layer memories (Facts, Episodes, Learnings).
 """
 
 import json
@@ -14,7 +14,7 @@ mcp = FastMCP("memory")
 
 @mcp.tool()
 def search_memory(query: str, limit: int = 5) -> str:
-    """Search personal persistent memories, facts, narrative chronicles, and learnings by keyword.
+    """Search personal persistent memories, facts, narrative chronicles, learnings, and linked relations by keyword.
     
     Args:
         query: Search terms or keywords to query the memory store.
@@ -39,13 +39,19 @@ def search_memory(query: str, limit: int = 5) -> str:
             """, (fts_query, limit))
             facts = [{"type": "fact", "id": r[0], "category": r[1], "content": r[2]} for r in cursor.fetchall()]
 
-            # Episodes via JOIN (ranked by relevance)
+            # Episodes via JOIN (ranked with status weighting: active > cooling > historic/resolved)
             cursor.execute("""
                 SELECT e.id, e.topic, e.title, e.period, e.status, e.narrative, e.stance
                 FROM episodes e
                 JOIN episodes_fts f ON e.id = f.id
                 WHERE episodes_fts MATCH ?
-                ORDER BY f.rank
+                ORDER BY 
+                    CASE e.status 
+                        WHEN 'active' THEN 1 
+                        WHEN 'cooling' THEN 2 
+                        ELSE 3 
+                    END ASC,
+                    f.rank ASC
                 LIMIT ?
             """, (fts_query, limit))
             episodes = [{
@@ -76,10 +82,21 @@ def search_memory(query: str, limit: int = 5) -> str:
                 "context": r[3]
             } for r in cursor.fetchall()]
 
+            # Entity links
+            cursor.execute("""
+                SELECT l.source_id, l.target_id, l.relation
+                FROM entity_links l
+                JOIN entity_links_fts f ON l.source_id = f.source_id AND l.target_id = f.target_id AND l.relation = f.relation
+                WHERE entity_links_fts MATCH ?
+                LIMIT ?
+            """, (fts_query, limit))
+            entity_links = [{"source": r[0], "target": r[1], "relation": r[2]} for r in cursor.fetchall()]
+
             return json.dumps({
                 "facts": facts,
                 "episodes": episodes,
-                "learnings": learnings
+                "learnings": learnings,
+                "entity_links": entity_links
             }, ensure_ascii=False, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -121,7 +138,7 @@ def record_episode(id: str, topic: str, title: str, narrative: str, period: str 
         title: Human-readable title of this chronicle.
         narrative: Rich multi-sentence narrative summary of history, events, and background context.
         period: Time period (e.g. '2020 - laufend', 'Sommer 2024').
-        status: Current status ('active', 'historic', 'resolved', 'monitoring').
+        status: Current status ('active', 'cooling', 'historic', 'resolved').
         entities: Involved people, organizations, or places.
         stance: User's stance, attitude, sentiments, or approach to this subject.
         keywords: Multilingual search terms and synonyms.
@@ -178,8 +195,30 @@ def record_learning(id: str, category: str, insight: str, context: str = "", key
         return f"Error recording learning: {e}"
 
 @mcp.tool()
+def link_entities_mcp(source_id: str, target_id: str, relation: str) -> str:
+    """Link two memory entities with a semantic relationship (e.g. 'infra.beelink' hosts 'service.immich').
+    
+    Args:
+        source_id: Source ID (e.g. 'infra.beelink').
+        target_id: Target ID (e.g. 'service.immich').
+        relation: Relationship description (e.g. 'hosts', 'member_of', 'depends_on', 'owns').
+    """
+    try:
+        with db_session() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO entity_links (source_id, target_id, relation)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_id, target_id, relation) DO NOTHING;
+            """, (source_id.strip(), target_id.strip(), relation.strip()))
+            conn.commit()
+        return f"Successfully linked '{source_id}' --[{relation}]--> '{target_id}'"
+    except Exception as e:
+        return f"Error linking entities: {e}"
+
+@mcp.tool()
 def list_memories() -> str:
-    """List all stored semantic facts, narrative chronicles, and learnings."""
+    """List all stored semantic facts, narrative chronicles, learnings, and entity links."""
     try:
         with db_session() as conn:
             cursor = conn.cursor()
@@ -200,10 +239,14 @@ def list_memories() -> str:
             cursor.execute("SELECT id, category, insight, context FROM learnings ORDER BY category, id")
             learnings = [{"id": r[0], "category": r[1], "insight": r[2], "context": r[3]} for r in cursor.fetchall()]
 
+            cursor.execute("SELECT source_id, target_id, relation FROM entity_links ORDER BY source_id, target_id")
+            links = [{"source": r[0], "target": r[1], "relation": r[2]} for r in cursor.fetchall()]
+
             return json.dumps({
                 "facts": facts,
                 "episodes": episodes,
-                "learnings": learnings
+                "learnings": learnings,
+                "entity_links": links
             }, ensure_ascii=False, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

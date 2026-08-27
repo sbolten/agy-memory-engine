@@ -128,6 +128,45 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         END;
     """)
 
+    # --- Feature 4: Entity Graph / Relations (Entity Linking) ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_links (
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            PRIMARY KEY (source_id, target_id, relation)
+        );
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_links_source ON entity_links(source_id);
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_links_target ON entity_links(target_id);
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS entity_links_fts USING fts5(
+            source_id, target_id, relation
+        );
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_entity_links_ai AFTER INSERT ON entity_links BEGIN
+            INSERT INTO entity_links_fts (source_id, target_id, relation)
+            VALUES (new.source_id, new.target_id, new.relation);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_entity_links_ad AFTER DELETE ON entity_links BEGIN
+            DELETE FROM entity_links_fts WHERE source_id = old.source_id AND target_id = old.target_id AND relation = old.relation;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_entity_links_au AFTER UPDATE ON entity_links BEGIN
+            DELETE FROM entity_links_fts WHERE source_id = old.source_id AND target_id = old.target_id AND relation = old.relation;
+            INSERT INTO entity_links_fts (source_id, target_id, relation)
+            VALUES (new.source_id, new.target_id, new.relation);
+        END;
+    """)
+
 
 @contextmanager
 def db_session(db_path: str = None):
