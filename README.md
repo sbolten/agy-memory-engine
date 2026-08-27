@@ -53,43 +53,72 @@ Inspired by Hermes Agent's 3-pillar memory architecture, using SQLite FTS5 for u
 
 ---
 
-## 🏛️ The 3-Pillar Memory Philosophy
+## 🏛️ The Multi-Layer Cognitive Memory Architecture
 
-To keep the agent razor-sharp across thousands of daily turns without prompt bloat or massive token bills, memory is partitioned into 3 distinct layers:
+To keep the agent razor-sharp across thousands of daily turns without prompt bloat or massive token bills, `agy-memory-engine` implements a 3-layer cognitive storage model:
 
-| Pillar | Type | Scope & Lifecycle | Storage Mechanism |
+```text
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    ~/.gemini/memory.db                                      │
+├────────────────────────────────┬────────────────────────────┬───────────────────────────────┤
+│    Layer 1: Atomic Facts       │ Layer 2: Narrative Dossiers│  Layer 3: Heuristic Learnings │
+│          (`memories`)          │        (`episodes`)        │         (`learnings`)         │
+├────────────────────────────────┼────────────────────────────┼───────────────────────────────┤
+│ - Server IPs, SSH ports        │ - Multi-turn background    │ - User preferences & stances  │
+│ - Hardware IDs & serials       │   chronicles & stories     │ - Heuristics, decisions, rules│
+│ - Personal master data         │ - Active projects & status │ - Operational guidelines      │
+│ - Instant exact key-value match│ - Timeline-based evolution │ - Context-aware advice        │
+└────────────────────────────────┴────────────────────────────┴───────────────────────────────┘
+```
+
+| Layer | Type | Scope & Lifecycle | Storage & Search Mechanism |
 |---|---|---|---|
-| **Pillar 1** | **Episodic / Working Context** | Transient day-to-day conversation, ephemeral tasks, session scratchpad. Dies after task completion or referenced via logs. | In-flight context window, Google Tasks, Transcripts |
-| **Pillar 2** | **Semantic / Long-Term Facts** | Deterministic facts, server IPs, personal master data, credentials metadata, hardware specs, family profiles. Permanent & instantly searchable. | **`~/.gemini/memory.db` (SQLite FTS5 + BM25)** |
-| **Pillar 3** | **Procedural / Skills & Rules** | *How* to execute tasks: API definitions, security rules, playbooks, formatting standards. | System Rules (`user_global`), AGY Skills |
+| **Layer 1** | **Atomic Semantic Facts** | Deterministic facts, server IPs, hardware specs, credentials metadata, master data. Permanent & exact. | SQLite FTS5 + BM25 (`memories` table) |
+| **Layer 2** | **Narrative Episodes & Dossiers** | Multi-turn chronicles, project states, timelines, and ongoing relationship/topic context. | SQLite FTS5 + BM25 (`episodes` table) |
+| **Layer 3** | **Experiential Learnings & Heuristics**| Tactical lessons, personal stances, decision rules, and cognitive heuristics. | SQLite FTS5 + BM25 (`learnings` table) |
 
 ---
 
-## 💡 Why AGY Memory Engine? (Motivation & Design Decisions)
+## 💡 Why SQLite FTS5 vs. Vector DBs (Chroma, Qdrant, FAISS)?
 
-Most LLM memory solutions today suffer from two extremes:
-1. **Vector DB / Semantic RAG bloat:** Embedding models, heavy C++/native dependencies (Chroma, FAISS, PyTorch), slow cold-starts, vector drift, and poor keyword/exact match (e.g. failing to cleanly recall exact IP addresses, port numbers, serials, or drug doses).
-2. **Context-stuffing everything:** Relying on huge 1M–2M context windows adds massive latency, increases token costs exponentially, and dilutes the agent's attention on long-running multi-turn sessions.
+A deliberate architectural choice was made to use **native SQLite FTS5 + BM25 keyword ranking** instead of traditional Vector Databases (like ChromaDB, Qdrant, Pinecone, or FAISS).
 
-### Key Insights:
-- **Exact & Fast > Fuzzy Vectors for Core Facts:** When an agent needs your timezone, server IPs, hardware specs, or personal preferences, SQLite FTS5 with BM25 ranking delivers deterministic, exact results in **< 2ms** with **0 MB extra RAM**.
-- **Telegram UX requires sub-second response starts:** SQLite FTS5 pre-fetches relevant facts locally via standard library Python before the LLM begins streaming.
-- **Zero External Dependencies:** Built entirely on Python’s standard library (`sqlite3`, `re`, `difflib`). Runs anywhere without `pip install`, wheel compilation issues, or Docker container overhead.
-- **Dynamic Pre-fetching without Prompt Bloat:** Instead of dumping an entire personal wiki into the system prompt, `agy-memory` extracts key entities, fetches only the 3–5 relevant facts, and injects them as ephemeral context.
-- **Autonomous Background Learning & Compaction:** Ingesting new memories is decoupled from the user interaction (`sync-turn`). Over time, automated nightly compaction (`compact --apply`) deduplicates, resolves contradictions, and prunes stale data across all user accounts.
+Here is why:
+
+### 1. 🎯 Exact Recall vs. "Semantic Drift" for Hard Facts
+Vector embeddings excel at semantic fuzziness (*"find things about travel"*), but they notoriously struggle with deterministic, exact-match queries:
+* **Vector DB Failure Mode:** An embedding search for `"Server IP 192.168.1.50"` or `"Port 8085"` frequently retrieves `"192.168.1.51"` or unrelated network docs because numerical tokens are close in vector space.
+* **SQLite FTS5 Advantage:** Exact substring, prefix (`token*`), token-level matches, and BM25 relevance guarantee that queries for specific hostnames, MAC addresses, port numbers, serials, and IDs return the exact record 100% of the time.
+
+### 2. ⚡ Ultra-Low Latency (<2ms vs. 150-400ms)
+* **Vector DBs:** Require computing a dense vector embedding via an external model (API roundtrip of ~100–300ms or local ONNX runtime overhead of 30–80ms + 200MB+ RAM).
+* **SQLite FTS5:** Pure C-based B-tree / FTS5 index lookup completes in **0.8ms to 2.0ms** directly in-process via Python's built-in `sqlite3`.
+* **Impact on Telegram / CLI UX:** Injects pre-fetched context instantly before the LLM begins streaming its first token.
+
+### 3. 🪶 Zero Dependencies & Native Portability
+* **Vector DBs:** Require heavyweight native C++/Rust dependencies, compilation chains (wheels for PyTorch, NumPy, ONNX, tokenizers, or running Docker containers).
+* **SQLite FTS5:** **Zero external dependencies.** Built 100% on the Python 3.10+ standard library (`sqlite3`, `re`, `difflib`, `argparse`, `json`). It runs identically on minimal Linux servers, ARM single-board computers, macOS, and barebone CI runners without running `pip install`.
+
+### 4. 🔒 Zero Hallucinated Duplication (Strict Topic Upsert)
+Vector databases blindly append embedding vectors, leading to contradictory duplicates (*"Staging server is .50"* and *"Staging server is .150"* both existing forever).
+* `agy-memory-engine` enforces structured `topic_key` IDs (`hardware.server.ip`). Updates deterministically overwrite the existing key, ensuring a single source of truth without knowledge drift.
+
+### 5. 💰 Zero Embedding Model & API Costs
+Embedding every message turn or background sync consumes embedding API credits or local GPU/CPU cycles. SQLite FTS5 indexes text instantly with zero computational cost.
 
 ---
 
 ## 🌟 Key Features
 
-- **⚡ Blazing Fast Retrieval (<2ms):** Uses native SQLite FTS5 full-text indexing with BM25 ranking.
+- **⚡ Blazing Fast Retrieval (<2ms):** Uses native SQLite FTS5 full-text indexing with BM25 ranking across all 3 cognitive layers.
 - **🔍 Typo & Fuzzy Fallback:** Automatically handles misspelled terms and queries via `difflib` vocabulary matching.
-- **🌐 Multilingual & German/English Stopword Filtering:** Filters out noise and matches keywords cross-lingually.
+- **🌐 Multilingual & German/English Stopword Filtering:** Filters out conversational noise and matches keywords cross-lingually.
+- **🔒 Race-Condition Safe:** Embedded `fcntl.flock` file locking prevents parallel `sync-turn` executions during high-frequency turns.
 - **🧠 Zero External Dependencies:** Pure Python 3 standard library (`sqlite3`, `re`, `difflib`, `argparse`, `json`, `subprocess`).
 - **🔌 Dual Interface:**
-  - **CLI:** `prefetch`, `sync-turn`, `add`, `list` for shell scripts, cron jobs, and custom gateway integrations.
-  - **MCP Server:** Standard Model Context Protocol (`agy_memory_mcp.py`) exposing `search_memory`, `store_memory`, and `list_memories`.
-- **⚙️ Configurable & Portable:** Resolves `agy` from `$PATH` automatically; database and cache paths configurable via environment variables (`AGY_MEMORY_DB`, `AGY_MEMORY_CACHE`, `AGY_BIN`).
+  - **CLI:** `prefetch`, `sync-turn`, `add`, `add-episode`, `add-learning`, `optimize`/`compact`, `list`, `--version`.
+  - **MCP Server:** Standard FastMCP Model Context Protocol (`agy_memory_mcp.py`) exposing `search_memory`, `store_memory`, `record_episode`, `record_learning`, and `list_memories`.
+- **⚙️ Configurable & Portable:** Database and cache paths configurable via environment variables (`AGY_MEMORY_DB`, `AGY_MEMORY_CACHE`, `AGY_BIN`).
 
 ---
 
@@ -99,41 +128,37 @@ Most LLM memory solutions today suffer from two extremes:
 - Python 3.10+ (standard library only, no `pip install` required)
 - Google Antigravity CLI (`agy`) installed in `$PATH` or `~/.local/bin/agy` (optional, needed for automated `sync-turn`)
 
-### 2. Manual Fact Management (CLI)
+### 2. Manual Memory Management (CLI)
 ```bash
-# Add a fact
-python3 agy_memory.py add --id "user.timezone" --category "preference" --fact "Timezone is UTC (CET/CEST)" --keywords "timezone zeit zeitzone time"
+# Add Layer 1 Fact
+python3 agy_memory.py add --id "user.timezone" --category "preference" --fact "Timezone is UTC+1 (CET) / UTC+2 (CEST) Zurich" --keywords "timezone zeit zeitzone zurich"
 
-# List stored memories
+# Add Layer 2 Episode / Dossier
+python3 agy_memory.py add-episode --id "project.nas_migration" --topic "infrastructure" --title "NAS Migration to TrueNAS" --narrative "Planning storage migration from OMV to TrueNAS SCALE." --keywords "nas truenas storage"
+
+# Add Layer 3 Learning / Heuristic
+python3 agy_memory.py add-learning --id "strategy.swiss_investing" --category "finance" --insight "For Swiss equity allocations, prefer CHF-hedged or local domestic funds to avoid FX drag." --keywords "finance investing chf funds"
+
+# List stored memories across all layers
 python3 agy_memory.py list
 
 # Query / Prefetch context for an upcoming prompt
-python3 agy_memory.py prefetch "Wann beginnt das nächste Meeting?"
+python3 agy_memory.py prefetch "Welche Server-IP hat das NAS und was ist bei CHF Anlagen zu beachten?"
 ```
 
 ### 3. Dynamic Conversation Turn Syncing
-Pass user input and assistant response to extract and persist new facts asynchronously:
+Pass user input and assistant response to extract and persist new facts, narrative milestones, and learnings asynchronously:
 ```bash
 python3 agy_memory.py sync-turn --user "Remember that our staging server IP changed to 192.168.1.150" --assistant "Understood, updated the staging IP."
 ```
 
-### 4. Compaction, Deduplication & Knowledge Maintenance (`compact`)
+### 4. Database Optimization & Compaction (`optimize` / `compact`)
 
-Over time, continuous background learning (`sync-turn`) can accumulate overlapping facts, fragmented notes, or outdated states. The `compact` command serves as an automated knowledge curator.
-
-#### 🎯 Why Use Memory Compaction?
-- **Redundancy Elimination:** Merges scattered mentions of the same subject into single, dense canonical entries.
-- **Contradiction & Drift Resolution:** Replaces superseded states (e.g. updated server IPs, new medication doses, changed configurations) while preserving current accuracy.
-- **Zero Data Loss Guarantee:** Retains 100% of concrete details (exact dates, IDs, serial numbers, credentials, URLs).
-- **Keyword Enrichment:** Generates fresh, multi-lingual search keywords (DE/EN synonyms and misspellings) to maximize FTS5 retrieval recall.
-- **Database Optimization:** Rebuilds the FTS5 virtual table index and runs SQLite `VACUUM` to eliminate fragmentation.
+Over time, continuous background learning (`sync-turn`) can accumulate overlapping facts or fragmented notes.
 
 ```bash
-# 1. Dry-run audit: Analyzes memories and displays a detailed diff/preview without writing changes
-python3 agy_memory.py compact
-
-# 2. Apply: Creates a timestamped backup in ~/.gemini/archive/, applies consolidations, and vacuums SQLite
-python3 agy_memory.py compact --apply
+# Optimize database, check keyword health, rebuild FTS5 indexes, and VACUUM SQLite
+python3 agy_memory.py optimize
 ```
 
 ---
