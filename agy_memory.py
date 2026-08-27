@@ -19,6 +19,8 @@ from contextlib import contextmanager
 
 from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
 
+__version__ = "1.1.0"
+
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
 DEFAULT_MODEL = "gemini-3.7-flash-high"
 AGY_BIN = os.environ.get("AGY_BIN") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
@@ -411,6 +413,27 @@ def sync_turn(user_prompt: str, assistant_response: str, dry_run: bool = False):
         assistant_response: The assistant's response text.
         dry_run: If True, only show what would change without writing to DB.
     """
+    import fcntl
+    import tempfile
+
+    lock_path = os.path.join(tempfile.gettempdir(), "agy_memory_sync_turn.lock")
+    try:
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        # Another sync-turn is already running — skip silently to avoid parallel agy spawns
+        sys.stderr.write("agy_memory: sync-turn already running, skipping.\n")
+        return
+
+    try:
+        _sync_turn_inner(user_prompt, assistant_response, dry_run)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def _sync_turn_inner(user_prompt: str, assistant_response: str, dry_run: bool = False):
+    """Inner implementation of sync_turn, called only when lock is held."""
     if is_trivial_prompt(user_prompt):
         return
 
@@ -658,6 +681,7 @@ compact_all = optimize_db
 
 def main():
     parser = argparse.ArgumentParser(description="AGY Multi-Layer Cognitive Memory Engine")
+    parser.add_argument("--version", "-v", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     pf = subparsers.add_parser("prefetch", help="Multi-layer FTS5 prefetch for a query")
