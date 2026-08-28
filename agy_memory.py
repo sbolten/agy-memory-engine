@@ -782,14 +782,182 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
 
-def optimize_db(apply_changes: bool = False, age_decay: bool = True):
-    """Rebuild FTS5 indexes, execute automatic episode aging, run VACUUM, and report stats."""
+def consolidate_memories(dry_run: bool = False) -> list:
+    """Analyze all stored atomic facts per category with Gemini LLM,
+    detect duplicate/overlapping facts, merge them cleanly into a single authoritative record,
+    delete the redundant entries, and log everything to consolidation_log.
+    """
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, category, fact, keywords FROM memories ORDER BY category, id")
+        all_facts = cursor.fetchall()
+
+    if not all_facts or len(all_facts) < 2:
+        print("[CONSOLIDATE] Less than 2 facts in database. Nothing to consolidate.")
+        return []
+
+    # Group facts by category with at least 2 entries
+    categories_to_check = {}
+    for fid, cat, fact, kws in all_facts:
+        cat_name = cat or "general"
+        categories_to_check.setdefault(cat_name, []).append({
+            "id": fid,
+            "category": cat_name,
+            "fact": fact,
+            "keywords": kws or ""
+        })
+
+    # Only include categories that actually have multiple facts
+    categories_to_check = {k: v for k, v in categories_to_check.items() if len(v) >= 2}
+
+    if not categories_to_check:
+        print("[CONSOLIDATE] No categories with 2+ facts to consolidate.")
+        return []
+
+    facts_json = json.dumps(categories_to_check, ensure_ascii=False, indent=2)
+    prompt = f"""You are the Memory Consolidation Engine for Stephan Bolten.
+Review the following atomic facts grouped by category.
+Identify any facts within each category that are duplicates, heavily overlapping, redundant, or represent the same information across different keys.
+
+Categories and Facts:
+{facts_json}
+
+INSTRUCTIONS:
+1. If two or more facts describe the exact same topic/entity/preference/routine, combine them into ONE authoritative, complete, concise fact.
+2. Choose the best, most structured primary ID (target_id) from the existing IDs, or suggest a clean canonical ID.
+3. List the redundant IDs that must be DELETED (merged_ids).
+4. Combine the keywords/tags cleanly without duplicates.
+5. Provide a short rationale explaining why these were merged.
+6. If no facts need to be merged in a category, do not create a merge entry for it.
+
+Respond ONLY with valid JSON in this exact structure:
+{{
+  "merges": [
+    {{
+      "target_id": "authoritative.key.name",
+      "category": "health",
+      "fact": "Authoritative consolidated fact text...",
+      "keywords": "combined keyword tags",
+      "merged_ids": ["redundant.key.1", "redundant.key.2"],
+      "rationale": "Merged daily intake and brand information into single routine entry."
+    }}
+  ]
+}}
+"""
+    model_name = get_cached_model()
+    out = ""
+    try:
+        res = subprocess.run(
+            [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+            capture_output=True, text=True, timeout=120
+        )
+        out = res.stdout.strip()
+    except Exception:
+        out = ""
+
+    if not out:
+        model_name = discover_and_cache_latest_flash_low_model()
+        try:
+            res = subprocess.run(
+                [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
+                capture_output=True, text=True, timeout=120
+            )
+            out = res.stdout.strip()
+        except Exception as e:
+            sys.stderr.write(f"Consolidation LLM call failed: {e}\n")
+            return []
+
+    if not out:
+        return []
+
+    consolidations = []
+    json_match = re.search(r'\{.*\}', out, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            for merge in data.get("merges", []):
+                target_id = merge.get("target_id")
+                cat_name = merge.get("category", "general")
+                merged_ids = [m for m in merge.get("merged_ids", []) if m != target_id]
+                fact_text = merge.get("fact")
+                kws = merge.get("keywords", "")
+                rationale = merge.get("rationale", "")
+
+                if not target_id or not merged_ids or not fact_text:
+                    continue
+
+                category_facts = categories_to_check.get(cat_name, [])
+                existing_merged = [m for m in merged_ids if any(f["id"] == m for f in category_facts)]
+                if not existing_merged:
+                    continue
+
+                diff_summary = f"Merged [{', '.join(existing_merged)}] into [{target_id}]"
+
+                if not dry_run:
+                    with db_session() as conn:
+                        cursor = conn.cursor()
+                        # 1. Update / upsert target record
+                        cursor.execute("""
+                            INSERT INTO memories (id, category, fact, keywords, updated_at)
+                            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(id) DO UPDATE SET
+                                category = excluded.category,
+                                fact = excluded.fact,
+                                keywords = excluded.keywords,
+                                updated_at = CURRENT_TIMESTAMP;
+                        """, (target_id, cat_name, fact_text, kws))
+
+                        # 2. Delete redundant merged IDs
+                        for mid in existing_merged:
+                            cursor.execute("DELETE FROM memories WHERE id = ?", (mid,))
+
+                        # 3. Insert audit log record
+                        cursor.execute("""
+                            INSERT INTO consolidation_log (action, category, target_id, merged_ids, diff_summary, rationale, timestamp)
+                            VALUES ('merge', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+                        """, (cat_name, target_id, json.dumps(existing_merged, ensure_ascii=False), diff_summary, rationale))
+
+                        conn.commit()
+
+                consolidations.append({
+                    "category": cat_name,
+                    "target_id": target_id,
+                    "merged_ids": existing_merged,
+                    "fact": fact_text,
+                    "rationale": rationale,
+                    "diff_summary": diff_summary
+                })
+                print(f"[CONSOLIDATE] {diff_summary} (Rationale: {rationale})")
+        except Exception as e:
+            sys.stderr.write(f"Error parsing consolidation JSON: {e}\n")
+
+    return consolidations
+
+def optimize_db(apply_changes: bool = False, age_decay: bool = True, consolidate: bool = False):
+    """Rebuild FTS5 indexes, execute automatic episode aging, optionally consolidate duplicate facts, run VACUUM, and report stats."""
     backup_dir = os.path.expanduser("~/.gemini/archive")
     os.makedirs(backup_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     backup_file = os.path.join(backup_dir, f"memory_db_backup_{ts}.bak")
     shutil.copy2(DB_PATH, backup_file)
     print(f"[BACKUP] Snapshot created: {backup_file}")
+
+    # Prune old snapshot backups (keep last 20 snapshots)
+    try:
+        backups = sorted(
+            [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if f.startswith("memory_db_backup_") and f.endswith(".bak")],
+            key=lambda p: os.path.getmtime(p),
+            reverse=True
+        )
+        if len(backups) > 20:
+            for old_bak in backups[20:]:
+                try:
+                    os.remove(old_bak)
+                    print(f"[BACKUP] Pruned old snapshot: {os.path.basename(old_bak)}")
+                except Exception:
+                    pass
+    except Exception as e:
+        sys.stderr.write(f"[WARN] Error during backup retention pruning: {e}\n")
 
     if age_decay:
         aging_res = age_episodes(days_to_cooling=30, days_to_historic=90)
@@ -801,6 +969,14 @@ def optimize_db(apply_changes: bool = False, age_decay: bool = True):
             print(f"[AGING] {len(aging_res['historied'])} episode(s) transitioned cooling -> historic:")
             for eid, title, upd in aging_res["historied"]:
                 print(f"  • {eid}: {title} (last update: {upd})")
+
+    if consolidate:
+        print("[CONSOLIDATE] Running semantic fact consolidation & deduplication...")
+        merges = consolidate_memories(dry_run=not apply_changes)
+        if merges:
+            print(f"[CONSOLIDATE] Successfully consolidated {len(merges)} cluster(s).")
+        else:
+            print("[CONSOLIDATE] No redundant facts detected across categories.")
 
     with db_session() as conn:
         cursor = conn.cursor()
@@ -872,7 +1048,7 @@ def main():
     ad.add_argument("--fact", type=str, required=True)
     ad.add_argument("--keywords", type=str, default="")
 
-    ae = subparsers.add_parser("add-episode", help="Manually add/update a narrative chronicle")
+    ae = subparsers.add_parser("add-episode", help="Manually add/update a narrative episode")
     ae.add_argument("--id", type=str, required=True)
     ae.add_argument("--topic", type=str, required=True)
     ae.add_argument("--title", type=str, required=True)
@@ -906,13 +1082,22 @@ def main():
     ag.add_argument("--days-to-cooling", type=int, default=30)
     ag.add_argument("--days-to-historic", type=int, default=90)
 
+    # Semantic consolidation CLI command
+    cs = subparsers.add_parser("consolidate", help="Run LLM semantic deduplication & consolidation of atomic facts")
+    cs.add_argument("--apply", action="store_true", help="Apply consolidations to database")
+    cs.add_argument("--dry-run", action="store_true", help="Show proposed consolidations without writing")
+
     op = subparsers.add_parser("optimize", help="Run episode aging, rebuild FTS indexes, VACUUM, report stats")
     op.add_argument("--apply", action="store_true", help="Apply optimization")
     op.add_argument("--no-age", action="store_true", help="Skip episode aging")
+    op.add_argument("--consolidate", action="store_true", default=True, help="Run semantic deduplication (default: True)")
+    op.add_argument("--no-consolidate", action="store_false", dest="consolidate", help="Skip semantic deduplication")
 
     # Keep backward compatibility
     cp = subparsers.add_parser("compact", help="(Alias for 'optimize') Rebuild FTS indexes & VACUUM")
     cp.add_argument("--apply", action="store_true")
+    cp.add_argument("--consolidate", action="store_true", default=True, help="Run semantic deduplication (default: True)")
+    cp.add_argument("--no-consolidate", action="store_false", dest="consolidate", help="Skip semantic deduplication")
 
     subparsers.add_parser("list", help="List all stored facts, episodes, learnings, and entity links")
 
@@ -940,8 +1125,15 @@ def main():
     elif args.command == "age-episodes":
         res = age_episodes(args.days_to_cooling, args.days_to_historic)
         print(f"Cooled: {len(res['cooled'])}, Historic: {len(res['historied'])}")
+    elif args.command == "consolidate":
+        apply_flag = args.apply or (not args.dry_run)
+        consolidate_memories(dry_run=not apply_flag)
     elif args.command in ("compact", "optimize"):
-        optimize_db(apply_changes=getattr(args, 'apply', True), age_decay=not getattr(args, 'no_age', False))
+        optimize_db(
+            apply_changes=getattr(args, 'apply', True),
+            age_decay=not getattr(args, 'no_age', False),
+            consolidate=getattr(args, 'consolidate', True)
+        )
     elif args.command == "list":
         list_all()
     else:

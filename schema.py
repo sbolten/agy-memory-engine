@@ -167,6 +167,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         END;
     """)
 
+    # --- Feature 5: Consolidation & Deduplication Audit Log ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS consolidation_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action TEXT NOT NULL,
+            category TEXT,
+            target_id TEXT NOT NULL,
+            merged_ids TEXT NOT NULL,
+            diff_summary TEXT,
+            rationale TEXT
+        );
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_consolidation_log_ts ON consolidation_log(timestamp DESC);
+    """)
+
 
 @contextmanager
 def db_session(db_path: str = None):

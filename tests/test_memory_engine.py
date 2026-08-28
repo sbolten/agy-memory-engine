@@ -486,6 +486,69 @@ class TestEpisodeAging(unittest.TestCase):
             self.assertEqual(cursor.fetchone()[0], "historic")
 
 
+class TestConsolidation(unittest.TestCase):
+    """Tests for Semantic Memory Consolidation and Audit Logging."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_consolidation_audit_logging(self):
+        """Test that consolidation correctly writes to consolidation_log and merges entries."""
+        agy_memory.upsert_fact("health.creatine.1", "health", "Takes 5g creatine monohydrate daily.", "creatine supplement")
+        agy_memory.upsert_fact("health.creatine.2", "health", "Lee-Sport Creapure Creatine 5g.", "creapure lee-sport")
+
+        # Mock LLM response for consolidation
+        mock_response = json.dumps({
+            "merges": [
+                {
+                    "target_id": "health.creatine.daily",
+                    "category": "health",
+                    "fact": "Takes 5g Creapure Creatine Monohydrate (Lee-Sport) daily.",
+                    "keywords": "creatine creapure lee-sport supplement",
+                    "merged_ids": ["health.creatine.1", "health.creatine.2"],
+                    "rationale": "Merged dosage and brand info into one canonical record."
+                }
+            ]
+        })
+
+        import unittest.mock as mock
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(stdout=mock_response, returncode=0)
+            merges = agy_memory.consolidate_memories(dry_run=False)
+
+        self.assertEqual(len(merges), 1)
+        self.assertEqual(merges[0]["target_id"], "health.creatine.daily")
+
+        with schema.db_session(TEST_DB) as conn:
+            cursor = conn.cursor()
+            # 1. Target ID exists
+            cursor.execute("SELECT fact FROM memories WHERE id = 'health.creatine.daily'")
+            row = cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertIn("Lee-Sport", row[0])
+
+            # 2. Merged IDs are deleted
+            cursor.execute("SELECT COUNT(*) FROM memories WHERE id IN ('health.creatine.1', 'health.creatine.2')")
+            self.assertEqual(cursor.fetchone()[0], 0)
+
+            # 3. Audit log contains the merge action
+            cursor.execute("SELECT action, category, target_id, diff_summary, rationale FROM consolidation_log")
+            log_row = cursor.fetchone()
+            self.assertIsNotNone(log_row)
+            self.assertEqual(log_row[0], "merge")
+            self.assertEqual(log_row[1], "health")
+            self.assertEqual(log_row[2], "health.creatine.daily")
+            self.assertIn("health.creatine.1", log_row[3])
+            self.assertEqual(log_row[4], "Merged dosage and brand info into one canonical record.")
+
+
 if __name__ == "__main__":
     unittest.main()
 
