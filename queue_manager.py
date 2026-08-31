@@ -47,7 +47,6 @@ def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "teleg
         return False
 
     init_queue_db(db_path)
-    # Deduplication hash based on prompt + response snippet
     content_hash = hashlib.sha256((user_prompt.strip() + "|||" + assistant_response[:300].strip()).encode("utf-8")).hexdigest()
     try:
         with sqlite3.connect(db_path, timeout=2.0) as conn:
@@ -61,7 +60,27 @@ def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "teleg
     except Exception:
         return False
 
-def get_pending_turns(limit: int = 10, db_path: str = QUEUE_DB_PATH) -> list:
+def get_pending_stats(db_path: str = QUEUE_DB_PATH) -> dict:
+    """Return count and age in seconds of newest and oldest pending turn."""
+    init_queue_db(db_path)
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                count(*),
+                COALESCE(strftime('%s', 'now') - strftime('%s', min(created_at)), 0),
+                COALESCE(strftime('%s', 'now') - strftime('%s', max(created_at)), 0)
+            FROM turn_queue
+            WHERE status = 'pending'
+        """)
+        row = cursor.fetchone()
+        return {
+            "count": row[0] if row else 0,
+            "oldest_age_seconds": row[1] if row and row[0] > 0 else 0,
+            "newest_age_seconds": row[2] if row and row[0] > 0 else 0
+        }
+
+def get_pending_turns(limit: int = 25, db_path: str = QUEUE_DB_PATH) -> list:
     """Fetch oldest pending turns for processing."""
     init_queue_db(db_path)
     with sqlite3.connect(db_path, timeout=5.0) as conn:

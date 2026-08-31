@@ -12,6 +12,7 @@ from queue_manager import (
     init_queue_db,
     enqueue_turn,
     get_pending_turns,
+    get_pending_stats,
     mark_turn_status,
     prune_processed_turns
 )
@@ -39,6 +40,15 @@ class TestQueueManager(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["user_prompt"], "Hallo, wie gehts?")
         self.assertEqual(pending[0]["chat_id"], "12345")
+
+    def test_pending_stats(self):
+        stats_empty = get_pending_stats(db_path=self.db_path)
+        self.assertEqual(stats_empty["count"], 0)
+
+        enqueue_turn("Turn A", "Resp A", db_path=self.db_path)
+        stats = get_pending_stats(db_path=self.db_path)
+        self.assertEqual(stats["count"], 1)
+        self.assertGreaterEqual(stats["newest_age_seconds"], 0)
 
     def test_mark_and_prune(self):
         enqueue_turn("Frage 1", "Antwort 1", db_path=self.db_path)

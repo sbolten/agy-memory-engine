@@ -113,19 +113,6 @@ def main():
             chat_id="299090858"
         )
 
-    # 2. Trigger asynchronous memory worker in detached background process
-    worker_script = BASE_DIR / "memory_worker.py"
-    if worker_script.exists():
-        try:
-            subprocess.Popen(
-                ["python3", str(worker_script)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-        except Exception:
-            pass
-
 
 if __name__ == "__main__":
     main()
