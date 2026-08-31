@@ -31,8 +31,8 @@ LOCK_FILE = Path.home() / ".gemini" / "memory_worker.lock"
 SEND_TELEGRAM_BIN = Path.home() / "bin" / "send_telegram.py"
 DEFAULT_TELEGRAM_CHAT_ID = "299090858"
 
-INACTIVITY_THRESHOLD_SECONDS = 300   # 5 minutes
-MAX_WAIT_THRESHOLD_SECONDS = 1800    # 30 minutes
+INACTIVITY_THRESHOLD_SECONDS = 300   # 5 minutes idle
+MAX_WAIT_THRESHOLD_SECONDS = 900     # 15 minutes max wait
 
 
 def send_telegram_notification(message: str, chat_id: str = None) -> bool:
