@@ -211,14 +211,14 @@ def age_episodes(days_to_cooling: int = 30, days_to_historic: int = 90) -> dict:
 
     return {"cooled": cooled, "historied": historied}
 
-def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_learnings: int = 2):
+def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_learnings: int = 2, quiet: bool = False):
     """Multi-layer prefetch with:
     1. Persistent preferences & rules (Layer 1)
     2. FTS5 exact + typo fuzzy search (Facts, Episodes with status weighting, Learnings)
     3. Entity Graph Expansion (1-hop linked facts/episodes/learnings)
     """
     if is_trivial_prompt(query):
-        return
+        return {} if quiet else None
 
     with db_session() as conn:
         cursor = conn.cursor()
@@ -396,6 +396,14 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
 
         # Output Generation
         total_facts = pref_rows + fact_rows
+        if quiet:
+            return {
+                "facts": total_facts,
+                "episodes": episode_rows,
+                "learnings": learning_rows,
+                "linked_context": linked_context if 'linked_context' in locals() else []
+            }
+
         if total_facts or episode_rows or learning_rows or (words and 'linked_context' in locals() and linked_context):
             if total_facts:
                 print("[🧠 Memory Context - Facts]")
