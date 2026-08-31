@@ -235,9 +235,18 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
         seen_episode_ids = set()
         seen_learning_ids = set()
 
-        # 2. Extract search terms
+        # 2. Extract search terms & German compound sub-tokens for hybrid semantic matching
         raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
-        words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
+        base_words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
+        
+        expanded_words = set(base_words)
+        for w in base_words:
+            if len(w) >= 8:
+                for split_len in range(4, len(w) - 3):
+                    p1, p2 = w[:split_len], w[split_len:]
+                    if p1 not in STOPWORDS and len(p1) >= 4: expanded_words.add(p1)
+                    if p2 not in STOPWORDS and len(p2) >= 4: expanded_words.add(p2)
+        words = list(expanded_words)
 
         fact_rows = []
         episode_rows = []
