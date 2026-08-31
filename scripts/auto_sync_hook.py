@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Antigravity Memory Auto-Sync Hook (Stop Lifecycle Hook)
-Parses the session transcript and automatically triggers agy_memory.py sync-turn
-in a detached background process to prevent blocking the agent termination.
+Parses the session transcript and non-blockingly enqueues the conversation turn
+into ~/.gemini/turn_queue.db, then triggers the background memory worker.
+Returns in < 2ms to ensure zero latency for the user.
 """
 
 import sys
@@ -11,19 +12,28 @@ import json
 import subprocess
 from pathlib import Path
 
+# Add memory engine directory to path
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
+
+try:
+    from queue_manager import enqueue_turn
+except ImportError:
+    enqueue_turn = None
+
+
 def main():
     try:
         payload_raw = sys.stdin.read()
         if not payload_raw.strip():
-            print(json.dumps({"decision": "allow"}))
+            print(json.dumps({}))
             return
         payload = json.loads(payload_raw)
     except Exception:
-        print(json.dumps({"decision": "allow"}))
+        print(json.dumps({}))
         return
 
     # Always respond immediately to satisfy the Stop hook contract
-    # Stop hook contract: {"decision": "allow"} or {"decision": "continue", "reason": "..."}
     print(json.dumps({}))
     sys.stdout.flush()
 
@@ -78,29 +88,28 @@ def main():
     if not last_user_prompt:
         return
 
-    sync_script = "/home/ubuntu/dev/agy-memory-engine/agy_memory.py"
-    if not os.path.exists(sync_script):
-        sync_script = "/opt/agy-memory-engine/agy_memory.py"
-
-    cmd = [
-        "python3",
-        sync_script,
-        "sync-turn",
-        "--user",
-        last_user_prompt[:4000],
-        "--assistant",
-        last_model_response[:4000] if last_model_response else "Action executed successfully."
-    ]
-
-    try:
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
+    # 1. Enqueue turn in local SQLite queue (< 1ms)
+    if enqueue_turn:
+        enqueue_turn(
+            user_prompt=last_user_prompt[:4000],
+            assistant_response=last_model_response[:4000] if last_model_response else "Action executed successfully.",
+            source="hook",
+            chat_id="299090858"
         )
-    except Exception:
-        pass
+
+    # 2. Trigger asynchronous memory worker in detached background process
+    worker_script = BASE_DIR / "memory_worker.py"
+    if worker_script.exists():
+        try:
+            subprocess.Popen(
+                ["python3", str(worker_script)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     main()

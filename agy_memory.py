@@ -552,13 +552,16 @@ def _format_diff(old: dict | None, new: dict, label: str) -> str:
         return f"  [UPDATE{protected_marker}] {label}: {new.get('id', '?')}\n" + "\n".join(changes)
     return ""
 
-def sync_turn(user_prompt: str, assistant_response: str, dry_run: bool = False):
+def sync_turn(user_prompt: str, assistant_response: str, dry_run: bool = False) -> dict:
     """Extract persistent information from a conversation turn and sync to memory.
     
     Args:
         user_prompt: The user's message text.
         assistant_response: The assistant's response text.
         dry_run: If True, only show what would change without writing to DB.
+
+    Returns:
+        dict: Summary of applied changes with keys 'facts', 'episodes', 'learnings', 'entity_links'.
     """
     import fcntl
     import tempfile
@@ -570,19 +573,20 @@ def sync_turn(user_prompt: str, assistant_response: str, dry_run: bool = False):
     except BlockingIOError:
         # Another sync-turn is already running — skip silently to avoid parallel agy spawns
         sys.stderr.write("agy_memory: sync-turn already running, skipping.\n")
-        return
+        return {"facts": [], "episodes": [], "learnings": [], "entity_links": []}
 
     try:
-        _sync_turn_inner(user_prompt, assistant_response, dry_run)
+        return _sync_turn_inner(user_prompt, assistant_response, dry_run)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
 
 
-def _sync_turn_inner(user_prompt: str, assistant_response: str, dry_run: bool = False):
+def _sync_turn_inner(user_prompt: str, assistant_response: str, dry_run: bool = False) -> dict:
     """Inner implementation of sync_turn, called only when lock is held."""
+    empty_res = {"facts": [], "episodes": [], "learnings": [], "entity_links": []}
     if is_trivial_prompt(user_prompt):
-        return
+        return empty_res
 
     inv = get_existing_database_inventory()
     inv_context = json.dumps(inv, ensure_ascii=False, indent=2)
@@ -673,10 +677,17 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
             out = res.stdout.strip()
         except Exception as e:
             sys.stderr.write(f"Sync failed: {e}\n")
-            return
+            return empty_res
 
     if not out:
-        return
+        return empty_res
+
+    applied_changes = {
+        "facts": [],
+        "episodes": [],
+        "learnings": [],
+        "entity_links": []
+    }
 
     json_match = re.search(r'\{.*\}', out, re.DOTALL)
     if json_match:
@@ -704,6 +715,12 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             continue
                         
                         upsert_fact(f["id"], f.get("category", "general"), f["fact"], f.get("keywords", ""))
+                        applied_changes["facts"].append({
+                            "id": f["id"],
+                            "category": f.get("category", "general"),
+                            "fact": f["fact"],
+                            "is_update": existing is not None
+                        })
                         print(f"Fact synced: {f['id']}")
 
                 # --- Episodes ---
@@ -733,6 +750,13 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             stance=ep.get("stance", ""),
                             keywords=ep.get("keywords", "")
                         )
+                        applied_changes["episodes"].append({
+                            "id": ep["id"],
+                            "topic": ep.get("topic", "general"),
+                            "title": ep.get("title", ep["id"]),
+                            "status": ep.get("status", "active"),
+                            "is_update": existing is not None
+                        })
                         print(f"Episode synced: {ep['id']}")
 
                 # --- Learnings ---
@@ -753,6 +777,12 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             context=lr.get("context", ""),
                             keywords=lr.get("keywords", "")
                         )
+                        applied_changes["learnings"].append({
+                            "id": lr["id"],
+                            "category": lr.get("category", "general"),
+                            "insight": lr["insight"],
+                            "is_update": existing is not None
+                        })
                         print(f"Learning synced: {lr['id']}")
 
                 # --- Entity Links ---
@@ -762,6 +792,11 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             diff_lines.append(f"  [NEW] Entity Link: {el['source']} --[{el['relation']}]--> {el['target']}")
                             continue
                         link_entities(el["source"], el["target"], el["relation"])
+                        applied_changes["entity_links"].append({
+                            "source": el["source"],
+                            "target": el["target"],
+                            "relation": el["relation"]
+                        })
                         print(f"Entity link synced: {el['source']} -> {el['target']}")
 
                 # Print diff summary
@@ -781,6 +816,8 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
             sys.stderr.write(f"JSON decode error during memory sync: {e}\n")
         except Exception as e:
             sys.stderr.write(f"Unexpected error during memory sync: {e}\n")
+
+    return applied_changes
 
 def consolidate_memories(dry_run: bool = False) -> list:
     """Analyze all stored atomic facts per category with Gemini LLM,
