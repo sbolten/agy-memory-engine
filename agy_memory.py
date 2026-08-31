@@ -657,11 +657,13 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
 
     model_name = get_cached_model()
     out = ""
+    run_env = dict(os.environ)
+    run_env["AGY_INTERNAL_INVOCATION"] = "1"
 
     try:
         res = subprocess.run(
             [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
-            capture_output=True, text=True, timeout=90
+            capture_output=True, text=True, timeout=90, env=run_env
         )
         out = res.stdout.strip()
     except Exception:
@@ -672,7 +674,7 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
         try:
             res = subprocess.run(
                 [AGY_BIN, "--print", prompt, "--model", model_name, "--dangerously-skip-permissions"],
-                capture_output=True, text=True, timeout=90
+                capture_output=True, text=True, timeout=90, env=run_env
             )
             out = res.stdout.strip()
         except Exception as e:

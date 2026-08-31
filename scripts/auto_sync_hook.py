@@ -88,6 +88,22 @@ def main():
     if not last_user_prompt:
         return
 
+    # Guard 0: If AGY is running as part of an internal memory worker or extraction script, ignore
+    if os.environ.get("AGY_INTERNAL_INVOCATION") == "1":
+        return
+
+    # Guard 1: Filter internal prompts and automated background jobs
+    internal_markers = [
+        "Multi-Layer Cognitive Memory Engine",
+        "Du bist Stephans persönlicher autonomer KI-Assistent in Zürich für das Paket",
+        "PROFIL Stephan:",
+        "TPA BOT REPORT",
+        "STATUS-SNAPSHOT [Paket:",
+        "AGY Bot Integrity Watchdog"
+    ]
+    if any(m in last_user_prompt for m in internal_markers):
+        return
+
     # 1. Enqueue turn in local SQLite queue (< 1ms)
     if enqueue_turn:
         enqueue_turn(

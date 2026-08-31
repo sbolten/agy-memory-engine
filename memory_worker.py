@@ -3,7 +3,7 @@
 Autonomous Asynchronous Memory Worker for Antigravity (AGY).
 Processes dialogue turns from ~/.gemini/turn_queue.db in the background,
 extracts facts/episodes/learnings into ~/.gemini/memory.db,
-and sends a brief informative notification to Telegram whenever new knowledge is stored.
+and sends a consolidated informative notification to Telegram when new knowledge is stored.
 """
 
 import os
@@ -89,11 +89,19 @@ def process_queue(batch_size: int = 10, notify: bool = True) -> int:
         return 0
 
     processed_count = 0
-    
-    # Group turns by chat_id/source if needed, or process in sequence
+    accumulated_changes = {
+        "facts": [],
+        "episodes": [],
+        "learnings": [],
+        "entity_links": []
+    }
+    notification_chat_id = DEFAULT_TELEGRAM_CHAT_ID
+
     for turn in pending:
         turn_id = turn["id"]
         chat_id = turn["chat_id"] or DEFAULT_TELEGRAM_CHAT_ID
+        if chat_id:
+            notification_chat_id = chat_id
         user_prompt = turn["user_prompt"]
         assistant_resp = turn["assistant_response"]
 
@@ -109,6 +117,10 @@ def process_queue(batch_size: int = 10, notify: bool = True) -> int:
             
             has_changes = any(bool(changes.get(k)) for k in ["facts", "episodes", "learnings", "entity_links"])
             
+            if has_changes:
+                for k in ["facts", "episodes", "learnings", "entity_links"]:
+                    accumulated_changes[k].extend(changes.get(k, []))
+
             summary_parts = []
             if changes.get("facts"): summary_parts.append(f"{len(changes['facts'])} facts")
             if changes.get("episodes"): summary_parts.append(f"{len(changes['episodes'])} episodes")
@@ -117,16 +129,23 @@ def process_queue(batch_size: int = 10, notify: bool = True) -> int:
             
             summary = ", ".join(summary_parts) if summary_parts else "No persistent entities found"
             mark_turn_status([turn_id], status="processed", summary=summary)
-
-            # Send Telegram notification ONLY if new or updated knowledge was discovered
-            if has_changes and notify:
-                msg = format_notification(changes)
-                send_telegram_notification(msg, chat_id=chat_id)
-
             processed_count += 1
         except Exception as e:
             sys.stderr.write(f"Error processing turn {turn_id}: {e}\n")
             mark_turn_status([turn_id], status="failed", error=str(e))
+
+    # Send ONE consolidated Telegram notification if knowledge was discovered
+    has_total_changes = any(bool(accumulated_changes.get(k)) for k in ["facts", "episodes", "learnings", "entity_links"])
+    if has_total_changes and notify:
+        # Deduplicate items by ID
+        unique_changes = {
+            "facts": {f["id"]: f for f in accumulated_changes["facts"]}.values(),
+            "episodes": {e["id"]: e for e in accumulated_changes["episodes"]}.values(),
+            "learnings": {l["id"]: l for l in accumulated_changes["learnings"]}.values(),
+            "entity_links": accumulated_changes["entity_links"]
+        }
+        msg = format_notification(unique_changes)
+        send_telegram_notification(msg, chat_id=notification_chat_id)
 
     # Clean up old processed items
     prune_processed_turns(days=7)

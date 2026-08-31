@@ -34,6 +34,18 @@ def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "teleg
     """Fast non-blocking insert of a turn into the queue (< 1ms)."""
     if not user_prompt or not user_prompt.strip():
         return False
+
+    internal_markers = [
+        "Multi-Layer Cognitive Memory Engine",
+        "Du bist Stephans persönlicher autonomer KI-Assistent in Zürich für das Paket",
+        "PROFIL Stephan:",
+        "TPA BOT REPORT",
+        "STATUS-SNAPSHOT [Paket:",
+        "AGY Bot Integrity Watchdog"
+    ]
+    if any(m in user_prompt for m in internal_markers):
+        return False
+
     init_queue_db(db_path)
     # Deduplication hash based on prompt + response snippet
     content_hash = hashlib.sha256((user_prompt.strip() + "|||" + assistant_response[:300].strip()).encode("utf-8")).hexdigest()
