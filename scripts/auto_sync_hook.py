@@ -110,7 +110,7 @@ def main():
             user_prompt=last_user_prompt[:4000],
             assistant_response=last_model_response[:4000] if last_model_response else "Action executed successfully.",
             source="hook",
-            chat_id="299090858"
+            chat_id=None
         )
 
 

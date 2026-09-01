@@ -37,11 +37,14 @@ MAX_WAIT_THRESHOLD_SECONDS = 900     # 15 minutes max wait
 
 def send_telegram_notification(message: str, chat_id: str = None) -> bool:
     """Send an informative notification to Telegram via send_telegram.py."""
-    target_chat = chat_id or DEFAULT_TELEGRAM_CHAT_ID
     if SEND_TELEGRAM_BIN.exists():
         try:
+            cmd = ["python3", str(SEND_TELEGRAM_BIN)]
+            if chat_id:
+                cmd.extend(["--chat-id", str(chat_id)])
+            cmd.append(message)
             res = subprocess.run(
-                ["python3", str(SEND_TELEGRAM_BIN), "--chat-id", str(target_chat), message],
+                cmd,
                 capture_output=True, text=True, timeout=15
             )
             return res.returncode == 0
@@ -117,7 +120,7 @@ def process_queue(batch_size: int = 25, notify: bool = True) -> int:
         return 0
 
     turn_ids = [t["id"] for t in pending]
-    notification_chat_id = pending[-1]["chat_id"] or DEFAULT_TELEGRAM_CHAT_ID
+    notification_chat_id = pending[-1]["chat_id"] if pending[-1].get("chat_id") else None
 
     dialogue_blocks = []
     for turn in pending:

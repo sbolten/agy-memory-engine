@@ -30,7 +30,7 @@ def init_queue_db(db_path: str = QUEUE_DB_PATH):
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turn_queue_status ON turn_queue(status, id);")
 
-def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "telegram", chat_id: str = "299090858", db_path: str = QUEUE_DB_PATH) -> bool:
+def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "telegram", chat_id: str = None, db_path: str = QUEUE_DB_PATH) -> bool:
     """Fast non-blocking insert of a turn into the queue (< 1ms)."""
     if not user_prompt or not user_prompt.strip():
         return False
@@ -54,7 +54,7 @@ def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "teleg
                 INSERT INTO turn_queue (hash, source, chat_id, user_prompt, assistant_response, status)
                 VALUES (?, ?, ?, ?, ?, 'pending')
                 ON CONFLICT(hash) DO NOTHING;
-            """, (content_hash, source, str(chat_id) if chat_id else "299090858", user_prompt.strip(), assistant_response.strip()))
+            """, (content_hash, source, str(chat_id) if chat_id else None, user_prompt.strip(), assistant_response.strip()))
             conn.commit()
             return True
     except Exception:
