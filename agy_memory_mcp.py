@@ -8,6 +8,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from schema import db_session
+from agy_memory import extract_multilingual_tokens, get_all_vocabulary
 
 mcp = FastMCP("memory")
 
@@ -20,13 +21,15 @@ def search_memory(query: str, limit: int = 5) -> str:
         query: Search terms or keywords to query the memory store.
         limit: Maximum number of results to return per category (default: 5).
     """
-    words = [w for w in query.split() if len(w) > 2]
-    if not words:
-        return json.dumps([], ensure_ascii=False)
-    fts_query = " OR ".join(words)
     try:
         with db_session() as conn:
             cursor = conn.cursor()
+            vocab = get_all_vocabulary(cursor)
+            words = extract_multilingual_tokens(query, vocab)
+            if not words:
+                return json.dumps([], ensure_ascii=False)
+            fts_terms = [f'"{w}"*' if len(w) >= 4 else f'"{w}"' for w in words]
+            fts_query = " OR ".join(fts_terms)
             
             # Facts via JOIN (ranked by relevance)
             cursor.execute("""

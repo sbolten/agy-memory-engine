@@ -1,11 +1,11 @@
 # AGY Memory Engine (v2.0.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 34/34 Passing](https://img.shields.io/badge/Tests-34%2F34%20Passed-brightgreen.svg)]()
+[![Tests: 37/37 Passing](https://img.shields.io/badge/Tests-37%2F37%20Passed-brightgreen.svg)]()
 
 > Lightweight, high-performance, standalone dynamic cognitive memory layer for Google Antigravity (`agy`) and autonomous agent frameworks.
 
-Inspired by Hermes Agent's multi-pillar memory architecture, using SQLite FTS5 for ultra-fast local retrieval (<2ms), hybrid German compound tokenization, relational entity linking, and autonomous background queue workers with calm-memory session debouncing.
+Inspired by Hermes Agent's multi-pillar memory architecture, using SQLite FTS5 for ultra-fast local retrieval (<2ms), multilingual compound sub-token decomposition & morphological stemming (DE, EN, FR, IT, ES, NL, SV), relational entity linking, and autonomous background queue workers with calm-memory session debouncing.
 
 ---
 
@@ -63,15 +63,16 @@ Inspired by Hermes Agent's multi-pillar memory architecture, using SQLite FTS5 f
 
 ---
 
-## 🔍 Hybrid Semantic Tokenizer vs. Vector Databases
+## 🔍 Hybrid Multilingual Tokenizer vs. Vector Databases
 
-Rather than requiring heavyweight PyTorch / ONNX vector libraries (~500MB RAM, 150ms latency), `agy-memory-engine` implements an in-process **Hybrid Semantic Tokenizer**:
+Rather than requiring heavyweight PyTorch / ONNX vector libraries (~500MB RAM, 150ms latency), `agy-memory-engine` implements an in-process **Hybrid Multilingual Semantic Tokenizer**:
 
-1. **German Compound Sub-Token Splitting:** Automatically decomposes complex composite nouns (e.g. `Hundeversicherung` ➔ `hunde` + `versicherung`, `Zweitwohnungssteuer` ➔ `zweitwohnung` + `steuer`).
-2. **BM25 Relevance Scoring:** Fast native SQLite FTS5 rank over facts, episodes, and learnings.
-3. **Status-Aware Aging:** Weights `active` topics above `cooling` and `historic` dossiers.
-4. **1-Hop Entity Expansion:** Resolves linked hardware/services automatically during prefetch.
-5. **Exact Match Guarantee:** 100% precision on IP addresses, ports, IDs, and serial numbers.
+1. **Multilingual Compound Sub-Token Decomposition:** Automatically decomposes composite nouns across German, Dutch, Scandinavian and Romance languages (e.g. `Hundeversicherung` ➔ `hund` + `versicherung`, `Zweitwohnungssteuer` ➔ `zweitwohnung` + `steuer`, `hondenverzekering` ➔ `hond` + `verzekering`) with Fugenmorpheme handling (`-s-`, `-en-`, `-n-`, `-er-`, `-e-`) and database vocabulary validation.
+2. **Morphological Suffix & Stemming Normalizer:** Normalizes inflectional endings across 8 European languages (DE, EN, FR, IT, ES, NL, SV/NO/DA) so inflected queries (e.g. `insurances`, `voitures`, `prenotazioni`, `reservaciones`) match stored canonical records.
+3. **BM25 Relevance Scoring:** Fast native SQLite FTS5 rank over facts, episodes, and learnings.
+4. **Status-Aware Aging:** Weights `active` topics above `cooling` and `historic` dossiers.
+5. **1-Hop Entity Expansion:** Resolves linked hardware/services automatically during prefetch.
+6. **Exact Match Guarantee:** 100% precision on IP addresses, ports, IDs, and serial numbers.
 
 ---
 

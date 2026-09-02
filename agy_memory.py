@@ -29,20 +29,117 @@ DEFAULT_MODEL = "gemini-3.7-flash-high"
 AGY_BIN = os.environ.get("AGY_BIN") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
 
 STOPWORDS = {
+    # German (de)
     "wie", "was", "wer", "wo", "wann", "warum", "welches", "welche", "welcher", "woher", "wohin",
     "ist", "sind", "war", "waren", "wird", "werden", "habe", "hat", "haben", "auf", "mit", "von",
     "aus", "für", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer", "einem", "einen",
     "und", "oder", "aber", "auch", "noch", "nur", "schon", "immer", "wieder", "heute", "gestern",
     "morgen", "mein", "meine", "meinen", "meiner", "meinem", "unser", "unsere", "unserem", "unseren",
     "lautet", "läuft", "geht", "bekommt", "macht", "gibt", "zeigt", "registriert", "geregelt",
-    "schau", "sag", "zeig", "prüfe", "checke", "bitte", "mal", "uns", "unsere", "ihr", "ihre",
-    # English & Latin stopwords / auxiliary verbs
+    "schau", "sag", "zeig", "prüfe", "checke", "bitte", "mal", "uns", "ihr", "ihre", "ihrem", "ihren",
+
+    # English (en)
     "the", "and", "is", "are", "was", "were", "what", "where", "when", "how", "who", "why",
     "which", "with", "from", "for", "about", "can", "could", "would", "should", "have", "has",
     "had", "our", "my", "your", "his", "her", "their", "its", "show", "tell", "check", "find",
     "that", "this", "then", "them", "they", "been", "into", "some", "more", "most", "such",
+    "will", "shall", "does", "did", "done", "give", "look", "here", "there",
+
+    # French (fr)
+    "le", "la", "les", "un", "une", "des", "du", "de", "et", "ou", "mais", "donc", "car", "ni",
+    "dans", "sur", "sous", "avec", "sans", "pour", "par", "ce", "cet", "cette", "ces",
+    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre", "leur",
+    "leurs", "nous", "vous", "ils", "elles", "qui", "que", "quoi", "quand", "comment", "pourquoi",
+    "est", "sont", "ete", "être", "avoir", "fait", "faire", "montre", "donne",
+
+    # Italian (it)
+    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "e", "ed", "o", "ma", "anche", "se",
+    "per", "con", "su", "tra", "fra", "da", "in", "del", "dello", "della", "dei", "degli", "delle",
+    "mio", "mia", "miei", "mie", "tuo", "tua", "tuoi", "tue", "suo", "sua", "suoi", "sue",
+    "nostro", "nostra", "nostri", "nostre", "vostro", "vostra", "vostri", "vostre", "loro",
+    "che", "chi", "cosa", "quando", "come", "dove", "perche", "perché", "sono", "siamo", "siete",
+    "stato", "stata", "fare", "mostra", "dimmi",
+
+    # Spanish (es)
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "y", "o", "pero", "sino", "de", "del",
+    "a", "al", "en", "con", "por", "para", "sobre", "sin", "mi", "mis", "tu", "tus", "su", "sus",
+    "nuestro", "nuestra", "nuestros", "nuestras", "que", "qué", "quien", "quién", "como", "cómo",
+    "cuando", "cuándo", "donde", "dónde", "porque", "porqué", "es", "son", "fue", "eran", "sido",
+    "ser", "estar", "haber", "hacer", "muestra", "dime",
+
+    # Dutch (nl)
+    "de", "het", "een", "en", "of", "maar", "want", "dus", "in", "op", "van", "met", "voor",
+    "naar", "uit", "over", "aan", "bij", "om", "door", "mijn", "jouw", "zijn", "haar", "onze",
+    "jullie", "hun", "wie", "wat", "waar", "wanneer", "waarom", "hoe", "zijn", "was", "waren",
+    "heeft", "hebben", "worden", "wordt", "toon", "laat",
+
+    # Scandinavian (sv / da / no)
+    "den", "det", "ett", "og", "och", "eller", "men", "som", "på", "till", "från", "fra",
+    "mitt", "mina", "ditt", "dina", "hans", "hennes", "vår", "vårt", "våra", "vad", "hvem",
+    "vem", "hvor", "var", "när", "når", "har", "hade", "haft", "bli", "blive", "blivit",
+
+    # Latin / Generic
     "est", "non", "sed", "et", "aut", "cum", "per"
 }
+
+STEM_SUFFIXES = (
+    "ungen", "heiten", "keiten", "schaft", "lichen", "ischen", "enden", "ation", "ations", "azioni", "azione",
+    "aciones", "acion", "menti", "mento", "mente", "ings", "ing", "ies", "ied", "ers", "ung", "heit", "keit",
+    "lich", "isch", "end", "ern", "en", "er", "es", "em", "ed", "ly", "os", "as", "es", "ando", "endo", "anti", "ante"
+)
+
+FUGEN_MORPHEMES = ("s", "en", "n", "er", "e")
+
+def extract_multilingual_tokens(query: str, vocab: set = None) -> list[str]:
+    """Extract search terms, perform multilingual morphological suffix stemming,
+    and decompose compound nouns with Fugenmorphemes & database vocabulary validation.
+    """
+    raw_words = re.findall(r'[\w]+', query.lower(), re.UNICODE)
+    base_words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
+
+    expanded_words = set(base_words)
+
+    for w in base_words:
+        # 1. Morphological Stemming / Suffix Normalization
+        if len(w) >= 5:
+            for sfx in STEM_SUFFIXES:
+                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                    stem = w[:-len(sfx)]
+                    if stem not in STOPWORDS and len(stem) >= 3:
+                        expanded_words.add(stem)
+                        break
+
+        # 2. Multilingual Compound Sub-Token Splitting with Vocabulary Validation
+        if len(w) >= 8:
+            vocab_matches = set()
+            unmatched_candidates = set()
+
+            for split_len in range(4, len(w) - 3):
+                p1, p2 = w[:split_len], w[split_len:]
+                pairs = [(p1, p2)]
+
+                # Interfix / Fugenmorpheme Handling
+                for f in FUGEN_MORPHEMES:
+                    if p1.endswith(f) and len(p1) - len(f) >= 3:
+                        pairs.append((p1[:-len(f)], p2))
+
+                for part1, part2 in pairs:
+                    if part1 not in STOPWORDS and len(part1) >= 4 and part2 not in STOPWORDS and len(part2) >= 4:
+                        if vocab and (part1 in vocab or part2 in vocab):
+                            if part1 in vocab:
+                                vocab_matches.add(part1)
+                            if part2 in vocab:
+                                vocab_matches.add(part2)
+                        else:
+                            unmatched_candidates.add(part1)
+                            unmatched_candidates.add(part2)
+
+            if vocab_matches:
+                expanded_words.update(vocab_matches)
+            elif not vocab:
+                expanded_words.update(unmatched_candidates)
+
+    return sorted(expanded_words)
 
 TRIVIAL_PROMPT_RE = re.compile(
     r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
@@ -113,28 +210,28 @@ def is_trivial_prompt(text: str) -> bool:
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 def get_all_vocabulary(cursor) -> set:
-    """Retrieve indexed vocabulary tokens from all tables for fast fuzzy/typo correction."""
+    """Retrieve indexed vocabulary tokens from all tables for fast fuzzy/typo correction and compound validation."""
     vocab = set()
     cursor.execute("SELECT id, category, fact, keywords FROM memories")
     for fid, cat, fact, kws in cursor.fetchall():
-        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', f"{fid} {cat or ''} {fact} {kws or ''}".lower())
+        tokens = re.findall(r'[\w]{3,}', f"{fid} {cat or ''} {fact} {kws or ''}".lower(), re.UNICODE)
         vocab.update(tokens)
     
     cursor.execute("SELECT id, topic, title, narrative, entities, stance, keywords FROM episodes")
     for row in cursor.fetchall():
         text = " ".join([str(x) for x in row if x])
-        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
+        tokens = re.findall(r'[\w]{3,}', text.lower(), re.UNICODE)
         vocab.update(tokens)
 
     cursor.execute("SELECT id, category, insight, context, keywords FROM learnings")
     for row in cursor.fetchall():
         text = " ".join([str(x) for x in row if x])
-        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', text.lower())
+        tokens = re.findall(r'[\w]{3,}', text.lower(), re.UNICODE)
         vocab.update(tokens)
 
     cursor.execute("SELECT source_id, target_id, relation FROM entity_links")
     for row in cursor.fetchall():
-        tokens = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]{4,}', f"{row[0]} {row[1]} {row[2]}".lower())
+        tokens = re.findall(r'[\w]{3,}', f"{row[0]} {row[1]} {row[2]}".lower(), re.UNICODE)
         vocab.update(tokens)
 
     return vocab
@@ -235,18 +332,9 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
         seen_episode_ids = set()
         seen_learning_ids = set()
 
-        # 2. Extract search terms & German compound sub-tokens for hybrid semantic matching
-        raw_words = re.findall(r'[a-zA-Z0-9äöüÄÖÜß]+', query.lower())
-        base_words = [w for w in raw_words if len(w) > 2 and w not in STOPWORDS]
-        
-        expanded_words = set(base_words)
-        for w in base_words:
-            if len(w) >= 8:
-                for split_len in range(4, len(w) - 3):
-                    p1, p2 = w[:split_len], w[split_len:]
-                    if p1 not in STOPWORDS and len(p1) >= 4: expanded_words.add(p1)
-                    if p2 not in STOPWORDS and len(p2) >= 4: expanded_words.add(p2)
-        words = list(expanded_words)
+        # 2. Extract search terms & multilingual compound sub-tokens with vocabulary validation
+        vocab = get_all_vocabulary(cursor)
+        words = extract_multilingual_tokens(query, vocab)
 
         fact_rows = []
         episode_rows = []

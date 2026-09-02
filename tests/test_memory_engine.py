@@ -549,6 +549,94 @@ class TestConsolidation(unittest.TestCase):
             self.assertEqual(log_row[4], "Merged dosage and brand info into one canonical record.")
 
 
+class TestMultilingualCompoundAndStemming(unittest.TestCase):
+    """Tests for multilingual token expansion, morphological stemming, and compound splitting with vocabulary validation."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_extract_multilingual_tokens_compounds(self):
+        """Test compound noun splitting with interfix / Fugenmorphemes."""
+        mock_vocab = {"hund", "versicherung", "zweitwohnung", "steuer", "zimmer", "reservierung", "hond", "verzekering"}
+        
+        # German compounds
+        tokens_de = agy_memory.extract_multilingual_tokens("Hundeversicherung für Abbie", mock_vocab)
+        self.assertIn("hund", tokens_de)
+        self.assertIn("versicherung", tokens_de)
+
+        tokens_fugen = agy_memory.extract_multilingual_tokens("Zweitwohnungssteuer in Graubünden", mock_vocab)
+        self.assertIn("zweitwohnung", tokens_fugen)
+        self.assertIn("steuer", tokens_fugen)
+
+        # Dutch compounds
+        tokens_nl = agy_memory.extract_multilingual_tokens("Wat is de hondenverzekering voor huisdieren", mock_vocab)
+        self.assertIn("hond", tokens_nl)
+        self.assertIn("verzekering", tokens_nl)
+
+    def test_extract_multilingual_tokens_stemming(self):
+        """Test morphological inflection/suffix stemming across multiple languages."""
+        mock_vocab = {"hotel", "madrid", "voiture", "albergo"}
+
+        # English plural stemming
+        tokens_en = agy_memory.extract_multilingual_tokens("What are the pet insurances", mock_vocab)
+        self.assertIn("pet", tokens_en)
+        self.assertTrue("insur" in tokens_en or "insuranc" in tokens_en or "insurances" in tokens_en)
+
+        # French plural & stopwords
+        tokens_fr = agy_memory.extract_multilingual_tokens("Quelle est l assurance pour mes voitures", mock_vocab)
+        self.assertIn("assurance", tokens_fr)
+        self.assertIn("voitur", tokens_fr)
+        self.assertNotIn("pour", tokens_fr)
+        self.assertNotIn("mes", tokens_fr)
+
+        # Italian stopwords & inflection
+        tokens_it = agy_memory.extract_multilingual_tokens("Mostrami la prenotazione alberghiera", mock_vocab)
+        self.assertIn("prenot", tokens_it)
+        self.assertNotIn("la", tokens_it)
+
+        # Spanish stopwords & inflection
+        tokens_es = agy_memory.extract_multilingual_tokens("Buscar reservaciones de hotel en Madrid", mock_vocab)
+        self.assertIn("hotel", tokens_es)
+        self.assertIn("madrid", tokens_es)
+        self.assertIn("reserv", tokens_es)
+        self.assertNotIn("de", tokens_es)
+        self.assertNotIn("en", tokens_es)
+
+    def test_multilingual_prefetch_end_to_end(self):
+        """End-to-end test verifying that multilingual compound and inflected queries match stored facts."""
+        agy_memory.upsert_fact("insurance.dog.ch", "insurance", "Hundeversicherung bei der Helvetia Police 12345.", "hund versicherung helvetia")
+        agy_memory.upsert_fact("tax.sent.zweitwohnung", "tax", "Zweitwohnungssteuer in Sent ist 1.5 Promille.", "zweitwohnung steuer sent")
+        agy_memory.upsert_fact("travel.madrid.hotel", "travel", "Hotel Urban Madrid gebucht für Oktober.", "hotel madrid reservation")
+
+        # 1. German compound query should match "Hundeversicherung" via "hund" + "versicherung"
+        f = io.StringIO()
+        with redirect_stdout(f):
+            res = agy_memory.prefetch("Gibt es eine Hundeleine oder Hundeversicherung?")
+        output = f.getvalue()
+        self.assertIn("Hundeversicherung bei der Helvetia", output)
+
+        # 2. English inflected query should match "hotel madrid reservation"
+        f2 = io.StringIO()
+        with redirect_stdout(f2):
+            res2 = agy_memory.prefetch("Show me my hotel reservations in Madrid")
+        output2 = f2.getvalue()
+        self.assertIn("Hotel Urban Madrid gebucht", output2)
+
+        # 3. Italian query should match "tax.sent.zweitwohnung"
+        f3 = io.StringIO()
+        with redirect_stdout(f3):
+            res3 = agy_memory.prefetch("Qual è la tassa sulla seconda casa a Sent?")
+        output3 = f3.getvalue()
+        self.assertIn("Zweitwohnungssteuer in Sent", output3)
+
+
 if __name__ == "__main__":
     unittest.main()
 
