@@ -295,48 +295,108 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     .item-meta span b { color: var(--text); }
 
-    /* Graph Visualizer */
-    .graph-grid {
+    /* Modern Grouped Entity Graph */
+    .entity-group-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
       gap: 15px;
     }
-    .graph-card {
+    @media (max-width: 600px) {
+      .entity-group-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .entity-subject-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 8px;
-      padding: 15px;
+      padding: 14px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .entity-subject-card:hover {
+      border-color: rgba(63, 185, 80, 0.4);
+      box-shadow: 0 0 12px rgba(63, 185, 80, 0.08);
+    }
+    .entity-subject-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .entity-subject-title {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
+      font-family: monospace;
+      font-weight: 600;
+      color: var(--accent);
+      font-size: 0.9rem;
+      word-break: break-all;
     }
-    .graph-node {
+    .entity-links-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .entity-link-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(255,255,255,0.03);
+      padding: 7px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .entity-relation-pill {
+      font-size: 0.7rem;
+      font-family: monospace;
+      font-weight: 600;
+      background: rgba(63, 185, 80, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(63, 185, 80, 0.35);
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .entity-arrow {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      flex-shrink: 0;
+    }
+    .entity-target-node {
       font-family: monospace;
       font-size: 0.85rem;
       color: var(--text-bright);
-      background: rgba(255,255,255,0.05);
-      padding: 6px 10px;
-      border-radius: 6px;
-      border: 1px solid var(--card-border);
-      flex: 1;
-      text-align: center;
       word-break: break-all;
     }
-    .graph-arrow {
-      color: var(--success);
-      font-size: 0.8rem;
-      font-weight: bold;
-      text-align: center;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
+
+    /* Table View for Graph */
+    .relation-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
     }
-    .graph-relation {
-      font-size: 0.7rem;
+    .relation-table th {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 2px solid var(--card-border);
       color: var(--text-muted);
       text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.5px;
+    }
+    .relation-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
       font-family: monospace;
+    }
+    .relation-table tr:hover td {
+      background: rgba(255,255,255,0.03);
     }
 
     /* Queue & Debounce */
@@ -458,7 +518,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <!-- TAB 4: Relations -->
   <div id="tab-graph" class="tab-content">
-    <div class="graph-grid" id="graph-items"></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
+      <h3 style="font-size:1.1rem; color:var(--text-bright);">Knowledge Graph Relations (<span id="graph-total-count">0</span>)</h3>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="inp-filter-graph" placeholder="Filter relations..." oninput="filterGraphView()" style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:6px; padding:4px 10px; color:var(--text-bright); font-size:0.8rem; width:180px; outline:none;">
+        <button class="pill active g-view-btn" style="cursor:pointer;" onclick="setGraphViewMode('grouped', event)">Grouped</button>
+        <button class="pill g-view-btn" style="cursor:pointer;" onclick="setGraphViewMode('table', event)">Table</button>
+      </div>
+    </div>
+    <div id="graph-items"></div>
   </div>
 
   <!-- TAB 5: Queue Monitor -->
@@ -502,6 +570,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     const openTurnDetails = new Set();
     let currentQueueFilter = 'all';
     let currentActiveTab = 'facts';
+    let currentGraphViewMode = 'grouped';
+    let graphFilterQuery = '';
 
     // State caches to avoid unnecessary DOM re-creation
     let lastRenderedQueueHash = '';
@@ -554,6 +624,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (rawData && rawData.queue) {
         renderQueue(rawData.queue, true);
       }
+    }
+
+    function setGraphViewMode(mode, ev) {
+      currentGraphViewMode = mode;
+      document.querySelectorAll('.g-view-btn').forEach(b => b.classList.remove('active'));
+      if (ev && ev.target) ev.target.classList.add('active');
+      lastRenderedGraphHash = '';
+      if (rawData && rawData.links) renderGraph(rawData.links, true);
+    }
+
+    function filterGraphView() {
+      const inp = document.getElementById('inp-filter-graph');
+      graphFilterQuery = (inp ? inp.value : '').trim().toLowerCase();
+      lastRenderedGraphHash = '';
+      if (rawData && rawData.links) renderGraph(rawData.links, true);
     }
 
     async function fetchData(forceDomRefresh = false) {
@@ -745,24 +830,93 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function renderGraph(links, force = false) {
       const cont = document.getElementById('graph-items');
-      const hash = JSON.stringify(links || []);
+      const totalCntLbl = document.getElementById('graph-total-count');
+      if (totalCntLbl) totalCntLbl.innerText = (links || []).length;
+
+      if (!links || links.length === 0) {
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:30px; text-align:center;">No entity relationships stored.</p>';
+        return;
+      }
+
+      let filtered = links;
+      if (graphFilterQuery) {
+        filtered = links.filter(l => 
+          l.source_id.toLowerCase().includes(graphFilterQuery) ||
+          l.relation.toLowerCase().includes(graphFilterQuery) ||
+          l.target_id.toLowerCase().includes(graphFilterQuery)
+        );
+      }
+
+      const hash = currentGraphViewMode + '::' + graphFilterQuery + '::' + JSON.stringify(filtered);
       if (!force && hash === lastRenderedGraphHash) return;
       lastRenderedGraphHash = hash;
 
-      if (!links || links.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No entity relationships stored.</p>';
+      if (filtered.length === 0) {
+        cont.innerHTML = `<p style="color:var(--text-muted); padding:30px; text-align:center;">No relations matching "${escapeHtml(graphFilterQuery)}".</p>`;
         return;
       }
-      cont.innerHTML = links.map(l => `
-        <div class="graph-card">
-          <div class="graph-node">${l.source_id}</div>
-          <div class="graph-arrow">
-            <span>➔</span>
-            <span class="graph-relation">${l.relation}</span>
+
+      if (currentGraphViewMode === 'table') {
+        cont.innerHTML = `
+          <div style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:8px; overflow:hidden;">
+            <table class="relation-table">
+              <thead>
+                <tr>
+                  <th>Source Entity</th>
+                  <th style="text-align:center;">Relation</th>
+                  <th>Target Entity</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(l => `
+                  <tr>
+                    <td style="color:var(--accent); font-weight:600;">${escapeHtml(l.source_id)}</td>
+                    <td style="text-align:center;">
+                      <span class="entity-relation-pill">${escapeHtml(l.relation)}</span>
+                    </td>
+                    <td style="color:var(--text-bright);">${escapeHtml(l.target_id)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
           </div>
-          <div class="graph-node">${l.target_id}</div>
+        `;
+        return;
+      }
+
+      // Grouped View (Default)
+      const grouped = {};
+      for (const l of filtered) {
+        if (!grouped[l.source_id]) grouped[l.source_id] = [];
+        grouped[l.source_id].push(l);
+      }
+
+      const sources = Object.keys(grouped).sort();
+
+      cont.innerHTML = `
+        <div class="entity-group-grid">
+          ${sources.map(src => `
+            <div class="entity-subject-card">
+              <div class="entity-subject-header">
+                <div class="entity-subject-title">
+                  <span style="color:var(--success);">🔗</span>
+                  <span>${escapeHtml(src)}</span>
+                </div>
+                <span class="pill active">${grouped[src].length}</span>
+              </div>
+              <div class="entity-links-list">
+                ${grouped[src].map(l => `
+                  <div class="entity-link-row">
+                    <span class="entity-relation-pill">${escapeHtml(l.relation)}</span>
+                    <span class="entity-arrow">➔</span>
+                    <span class="entity-target-node">${escapeHtml(l.target_id)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
         </div>
-      `).join('');
+      `;
     }
 
     function renderAudit(audit, force = false) {
