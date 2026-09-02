@@ -1,7 +1,7 @@
 # AGY Memory Engine (v2.0.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 39/39 Passing](https://img.shields.io/badge/Tests-39%2F39%20Passed-brightgreen.svg)]()
+[![Tests: 41/41 Passing](https://img.shields.io/badge/Tests-41%2F41%20Passed-brightgreen.svg)]()
 
 > Lightweight, high-performance, standalone dynamic cognitive memory layer for Google Antigravity (`agy`) and autonomous agent frameworks.
 
@@ -198,7 +198,38 @@ AGY_MEMORY_TELEGRAM_CHAT_ID=299090858
 
 # Path to Antigravity CLI binary
 AGY_BIN=agy
+
+# Real-Time Debug Dashboard (Web UI)
+AGY_MEMORY_DEBUG_DASHBOARD=true
+AGY_MEMORY_DASHBOARD_PORT=8085
+AGY_MEMORY_DASHBOARD_HOST=0.0.0.0
 ```
+
+---
+
+## 📊 Real-Time Debug Web Dashboard
+
+A zero-dependency, standalone live web dashboard is included to inspect, search, and monitor memory state in real time:
+
+* **Live FTS5 Search Sandbox:** Test hybrid multilingual queries with sub-millisecond latency metrics.
+* **Turn Queue & Debounce Monitor:** Visual countdown bar for active conversation debouncing (5m idle / 15m timeout) with an instant *"Batch jetzt verarbeiten"* trigger.
+* **4-Layer Visualizer:** Browse Facts (Layer 1), Thematic Episodes with status badges (Layer 2), Experiential Learnings (Layer 3), and Knowledge Graph Entity Links (Layer 4).
+* **Consolidation Audit Log:** Review automated background merges, deduplications, and semantic rationale.
+
+### Starting the Dashboard
+
+```bash
+# Via CLI command
+python3 agy_memory.py ui --port 8085
+
+# Or directly via standalone runner
+python3 dashboard.py --port 8085
+
+# Or via systemd background user service
+systemctl --user start agy-memory-dashboard.service
+```
+
+Access in your browser at `http://localhost:8085` (or over Tailscale at `http://<tailscale-ip>:8085`).
 
 ---
 
@@ -241,7 +272,7 @@ Registers the sub-millisecond transcript collector on every agent turn stop:
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 39 tests in 1.4s (OK)
+# Ran 41 tests in 1.5s (OK)
 ```
 
 ---

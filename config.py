@@ -66,3 +66,9 @@ MAX_WAIT_THRESHOLD_SECONDS = int(get_config("AGY_MEMORY_MAX_WAIT_SECONDS", "900"
 # --- Telegram Notifications ---
 DEFAULT_TELEGRAM_CHAT_ID = get_config("AGY_MEMORY_TELEGRAM_CHAT_ID", "299090858")
 SEND_TELEGRAM_BIN = Path.home() / "bin" / "send_telegram.py"
+
+# --- Real-Time Debug Dashboard ---
+DASHBOARD_ENABLED = get_config("AGY_MEMORY_DEBUG_DASHBOARD", "false").lower() in ("true", "1", "yes", "on")
+DASHBOARD_PORT = int(get_config("AGY_MEMORY_DASHBOARD_PORT", "8085"))
+DASHBOARD_HOST = get_config("AGY_MEMORY_DASHBOARD_HOST", "0.0.0.0")
+

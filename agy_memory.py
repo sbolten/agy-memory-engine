@@ -1249,6 +1249,10 @@ def main():
 
     subparsers.add_parser("list", help="List all stored facts, episodes, learnings, and entity links")
 
+    ui_p = subparsers.add_parser("ui", help="Launch real-time debug web dashboard")
+    ui_p.add_argument("--port", type=int, default=None, help="Port to listen on (default from .env)")
+    ui_p.add_argument("--host", type=str, default=None, help="Host to bind to (default from .env)")
+
     args = parser.parse_args()
 
     if args.command == "prefetch":
@@ -1284,6 +1288,12 @@ def main():
         )
     elif args.command == "list":
         list_all()
+    elif args.command in ("ui", "dashboard"):
+        from dashboard import run_dashboard
+        from config import DASHBOARD_HOST, DASHBOARD_PORT
+        port = args.port or DASHBOARD_PORT
+        host = args.host or DASHBOARD_HOST
+        run_dashboard(host=host, port=port)
     else:
         parser.print_help()
 
