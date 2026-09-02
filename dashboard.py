@@ -30,7 +30,7 @@ from config import (
 )
 from schema import db_session
 from agy_memory import extract_multilingual_tokens, get_all_vocabulary
-from queue_manager import get_pending_stats, get_pending_turns
+from queue_manager import get_pending_stats, get_pending_turns, get_recent_turns
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -408,7 +408,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="stat-val" id="cnt-links">0</div>
       <div class="stat-sub">Knowledge Graph Entity Links</div>
     </div>
-    <div class="stat-card c-queue">
+    <div class="stat-card c-queue" style="cursor:pointer;" onclick="switchTab('queue')" title="Click to open Turn Queue Inspector">
       <div class="stat-label">Turn Queue</div>
       <div class="stat-val" id="cnt-queue">0</div>
       <div class="stat-sub" id="lbl-queue-sub">0 pending</div>
@@ -452,7 +452,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <button class="btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="forceWorker()">Process Batch Now</button>
       </div>
     </div>
-    <h3 style="margin-bottom:15px; font-size:1.1rem; color:var(--text-bright);">Pending Turns in Queue</h3>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
+      <h3 style="font-size:1.1rem; color:var(--text-bright);">Conversation Turn Queue Inspector</h3>
+      <div class="queue-filters" style="display:flex; gap:6px;">
+        <button class="pill active q-filter-btn" style="cursor:pointer;" onclick="filterQueue('all', event)">All</button>
+        <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('pending', event)">Pending</button>
+        <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('processed', event)">Processed</button>
+        <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('skipped', event)">Skipped</button>
+      </div>
+    </div>
     <div id="queue-items"></div>
   </div>
 
@@ -522,36 +531,92 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
+    let currentQueueFilter = 'all';
+
+    function filterQueue(status, ev) {
+      currentQueueFilter = status;
+      document.querySelectorAll('.q-filter-btn').forEach(b => b.classList.remove('active'));
+      if (ev && ev.target) ev.target.classList.add('active');
+      if (rawData && rawData.queue) {
+        renderQueue(rawData.queue);
+      }
+    }
+
     function renderQueue(queue) {
       const qCont = document.getElementById('queue-items');
       const debLbl = document.getElementById('lbl-debounce-text');
       const prog = document.getElementById('progress-debounce');
 
-      if (!queue || queue.pending_count === 0) {
-        debLbl.innerText = 'Queue is empty (0 pending turns)';
-        prog.style.width = '0%';
-        qCont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No pending turns.</p>';
-        return;
-      }
+      if (!queue) return;
 
       const idleSec = queue.newest_age_seconds || 0;
       const pct = Math.min(100, Math.round((idleSec / 300) * 100));
       prog.style.width = pct + '%';
-      debLbl.innerText = `Last message ${idleSec}s ago (batch triggers at 300s idle or 15m timeout)`;
+      debLbl.innerText = queue.pending_count > 0
+        ? `Last message ${idleSec}s ago (batch triggers at 300s idle or 15m timeout)`
+        : 'Queue is idle (0 pending turns)';
 
-      qCont.innerHTML = queue.turns.map(t => `
-        <div class="item-card">
-          <div class="item-header">
-            <span class="item-id">Turn #${t.id} [${t.source || 'telegram'}]</span>
-            <span class="pill active">${t.created_at}</span>
+      const allTurns = queue.turns || [];
+      const filteredTurns = currentQueueFilter === 'all'
+        ? allTurns
+        : allTurns.filter(t => t.status === currentQueueFilter);
+
+      if (filteredTurns.length === 0) {
+        qCont.innerHTML = `<p style="color:var(--text-muted); padding:30px; text-align:center;">No ${currentQueueFilter !== 'all' ? currentQueueFilter : ''} turns found in queue.</p>`;
+        return;
+      }
+
+      qCont.innerHTML = filteredTurns.map(t => {
+        let statusClass = 'historic';
+        if (t.status === 'pending') statusClass = 'cooling';
+        if (t.status === 'processed') statusClass = 'active';
+        if (t.status === 'failed') statusClass = 'danger';
+
+        const isPending = t.status === 'pending';
+
+        return `
+          <div class="item-card" style="border-left: 3px solid ${isPending ? 'var(--warning)' : (t.status === 'processed' ? 'var(--success)' : 'var(--card-border)')}; margin-bottom:14px;">
+            <div class="item-header">
+              <span class="item-id">Turn #${t.id} <span style="font-weight:normal; color:var(--text-muted)">[${t.source || 'telegram'}]</span></span>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <span class="pill ${statusClass}">${t.status.toUpperCase()}</span>
+                <span style="font-size:0.75rem; color:var(--text-muted);">${t.created_at}</span>
+              </div>
+            </div>
+            
+            <div style="background:rgba(88, 166, 255, 0.08); border-radius:6px; padding:10px 12px; margin-bottom:10px; border-left:3px solid var(--accent);">
+              <div style="font-size:0.75rem; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:4px;">👤 User Prompt</div>
+              <div style="color:var(--text-bright); font-size:0.9rem; white-space:pre-wrap;">${escapeHtml(t.user_prompt)}</div>
+            </div>
+
+            <details style="background:rgba(255, 255, 255, 0.03); border-radius:6px; padding:8px 12px; margin-bottom:10px;">
+              <summary style="cursor:pointer; font-size:0.8rem; color:var(--text-muted); font-weight:500;">
+                🤖 Assistant Response (${(t.assistant_response || '').length} chars) — Click to view
+              </summary>
+              <div style="color:var(--text); font-size:0.85rem; margin-top:8px; white-space:pre-wrap; max-height:260px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">
+                ${escapeHtml(t.assistant_response || '')}
+              </div>
+            </details>
+
+            ${t.extracted_summary ? `
+              <div style="background:rgba(63, 185, 80, 0.1); border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:0.8rem; color:var(--success);">
+                🧠 <b>Extracted Knowledge:</b> ${escapeHtml(t.extracted_summary)}
+              </div>
+            ` : ''}
+
+            ${t.error ? `
+              <div style="background:rgba(248, 81, 73, 0.1); border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:0.8rem; color:var(--danger);">
+                ⚠️ <b>Error:</b> ${escapeHtml(t.error)}
+              </div>
+            ` : ''}
+
+            <div class="item-meta">
+              <span><b>Chat ID:</b> ${t.chat_id || '-'}</span>
+              <span><b>Status:</b> ${t.status}</span>
+            </div>
           </div>
-          <div class="item-body"><b>User:</b> ${escapeHtml(t.user_prompt)}</div>
-          <div class="item-meta">
-            <span><b>Status:</b> ${t.status}</span>
-            <span><b>Chat ID:</b> ${t.chat_id || '-'}</span>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function renderFacts(facts) {
@@ -852,7 +917,7 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
 
             # Queue stats
             q_stats = get_pending_stats()
-            q_turns = get_pending_turns(limit=25)
+            q_turns = get_recent_turns(limit=50)
 
             # DB file size
             db_size = "-"

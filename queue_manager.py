@@ -129,3 +129,38 @@ def prune_processed_turns(days: int = 7, db_path: str = QUEUE_DB_PATH):
             conn.commit()
     except Exception:
         pass
+
+
+def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_DB_PATH) -> list:
+    """Fetch recent turns with optional status filter for dashboard inspection."""
+    init_queue_db(db_path)
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        cursor = conn.cursor()
+        if status:
+            cursor.execute("""
+                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error
+                FROM turn_queue
+                WHERE status = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (status, limit))
+        else:
+            cursor.execute("""
+                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error
+                FROM turn_queue
+                ORDER BY id DESC
+                LIMIT ?
+            """, (limit,))
+        rows = cursor.fetchall()
+        return [{
+            "id": r[0],
+            "source": r[1],
+            "chat_id": r[2],
+            "user_prompt": r[3],
+            "assistant_response": r[4],
+            "created_at": r[5],
+            "status": r[6],
+            "extracted_summary": r[7],
+            "error": r[8]
+        } for r in rows]
+
