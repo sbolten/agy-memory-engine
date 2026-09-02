@@ -758,7 +758,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
               <div class="item-meta">
                 <span><b>Chat ID:</b> ${t.chat_id || '-'}</span>
-                <span><b>Status:</b> Wartet auf Calm-Memory Debounce</span>
+                <span><b>Status:</b> Waiting for calm-memory debounce</span>
               </div>
             </div>
           `;
@@ -781,7 +781,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
                     📦 Batch <span style="color:var(--accent); font-family:monospace;">${escapeHtml(b.batch_id)}</span>
                   </span>
                   <span class="pill" style="background:rgba(88, 166, 255, 0.12); color:var(--accent); border-color:rgba(88, 166, 255, 0.3);">
-                    ${b.turns.length} Turn${b.turns.length > 1 ? 's' : ''} gemeinsam verarbeitet (${turnIdsStr})
+                    ${b.turns.length} turn${b.turns.length > 1 ? 's' : ''} processed together (${turnIdsStr})
                   </span>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center;">
@@ -792,7 +792,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
               ${b.summary ? `
                 <div style="background:rgba(63, 185, 80, 0.12); border:1px solid rgba(63, 185, 80, 0.25); border-radius:6px; padding:9px 12px; margin-bottom:12px; font-size:0.85rem; color:var(--success);">
-                  🧠 <b>Extrahierte Knowledge (aus diesem Batch):</b> ${escapeHtml(b.summary)}
+                  🧠 <b>Extracted Knowledge (from this batch):</b> ${escapeHtml(b.summary)}
                 </div>
               ` : ''}
 
