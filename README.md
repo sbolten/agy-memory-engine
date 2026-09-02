@@ -1,7 +1,7 @@
 # AGY Memory Engine (v2.0.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 37/37 Passing](https://img.shields.io/badge/Tests-37%2F37%20Passed-brightgreen.svg)]()
+[![Tests: 39/39 Passing](https://img.shields.io/badge/Tests-39%2F39%20Passed-brightgreen.svg)]()
 
 > Lightweight, high-performance, standalone dynamic cognitive memory layer for Google Antigravity (`agy`) and autonomous agent frameworks.
 
@@ -168,11 +168,45 @@ Add to your MCP settings file (e.g. `~/.gemini/antigravity-cli/mcp_config.json` 
 
 ---
 
+## ⚙️ Configuration (`.env`)
+
+All engine parameters, database locations, LLM model choice, and debounce thresholds can be configured via `.env` (or environment variables). A ready-to-use template is provided in [`.env.example`](file:///opt/agy-memory-engine/.env.example):
+
+```bash
+# Copy template to .env
+cp .env.example .env
+```
+
+```ini
+# ==============================================================================
+# AGY Memory Engine - Configuration File
+# ==============================================================================
+
+# LLM model used for background memory extraction & consolidation
+AGY_MEMORY_MODEL=gemini-3.7-flash-high
+
+# SQLite Database Storage Paths
+AGY_MEMORY_DB=~/.gemini/memory.db
+AGY_TURN_QUEUE_DB=~/.gemini/turn_queue.db
+
+# Calm-Memory Debounce Settings (in seconds)
+AGY_MEMORY_INACTIVITY_SECONDS=300   # 5 minutes idle threshold
+AGY_MEMORY_MAX_WAIT_SECONDS=900     # 15 minutes max timeout
+
+# Telegram Notification Recipient
+AGY_MEMORY_TELEGRAM_CHAT_ID=299090858
+
+# Path to Antigravity CLI binary
+AGY_BIN=agy
+```
+
+---
+
 ## 🧪 Testing
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 37 tests in 1.4s (OK)
+# Ran 39 tests in 1.4s (OK)
 ```
 
 ---

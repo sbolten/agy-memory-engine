@@ -637,6 +637,42 @@ class TestMultilingualCompoundAndStemming(unittest.TestCase):
         self.assertIn("Zweitwohnungssteuer in Sent", output3)
 
 
+class TestConfigModule(unittest.TestCase):
+    """Tests for config.py zero-dependency .env parsing and default fallbacks."""
+
+    def test_load_env_file_parser(self):
+        import tempfile
+        from pathlib import Path
+        import config
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".env") as tf:
+            tf.write("""
+# Sample configuration
+AGY_MEMORY_MODEL=gemini-custom-flash
+AGY_MEMORY_INACTIVITY_SECONDS=120
+AGY_MEMORY_TELEGRAM_CHAT_ID="12345678"
+""")
+            tf_path = Path(tf.name)
+
+        try:
+            parsed = config._load_env_file(tf_path)
+            self.assertEqual(parsed.get("AGY_MEMORY_MODEL"), "gemini-custom-flash")
+            self.assertEqual(parsed.get("AGY_MEMORY_INACTIVITY_SECONDS"), "120")
+            self.assertEqual(parsed.get("AGY_MEMORY_TELEGRAM_CHAT_ID"), "12345678")
+        finally:
+            if tf_path.exists():
+                tf_path.unlink()
+
+    def test_config_defaults(self):
+        import config
+        self.assertTrue(bool(config.MODEL_NAME))
+        self.assertTrue(bool(config.DB_PATH))
+        self.assertTrue(bool(config.QUEUE_DB_PATH))
+        self.assertGreaterEqual(config.INACTIVITY_THRESHOLD_SECONDS, 1)
+        self.assertGreaterEqual(config.MAX_WAIT_THRESHOLD_SECONDS, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

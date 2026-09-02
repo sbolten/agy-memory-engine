@@ -7,7 +7,7 @@ import sqlite3
 import hashlib
 from contextlib import contextmanager
 
-QUEUE_DB_PATH = os.environ.get("AGY_TURN_QUEUE_DB", os.path.expanduser("~/.gemini/turn_queue.db"))
+from config import QUEUE_DB_PATH
 
 def init_queue_db(db_path: str = QUEUE_DB_PATH):
     """Ensure the turn queue table exists with WAL mode."""

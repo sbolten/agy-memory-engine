@@ -26,13 +26,14 @@ from queue_manager import (
     QUEUE_DB_PATH
 )
 from agy_memory import is_trivial_prompt, sync_turn
+from config import (
+    INACTIVITY_THRESHOLD_SECONDS,
+    MAX_WAIT_THRESHOLD_SECONDS,
+    DEFAULT_TELEGRAM_CHAT_ID,
+    SEND_TELEGRAM_BIN
+)
 
 LOCK_FILE = Path.home() / ".gemini" / "memory_worker.lock"
-SEND_TELEGRAM_BIN = Path.home() / "bin" / "send_telegram.py"
-DEFAULT_TELEGRAM_CHAT_ID = "299090858"
-
-INACTIVITY_THRESHOLD_SECONDS = 300   # 5 minutes idle
-MAX_WAIT_THRESHOLD_SECONDS = 900     # 15 minutes max wait
 
 
 def send_telegram_notification(message: str, chat_id: str = None) -> bool:

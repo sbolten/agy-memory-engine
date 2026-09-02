@@ -21,12 +21,14 @@ import datetime
 from contextlib import contextmanager
 
 from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
+from config import (
+    MODEL_NAME,
+    DEFAULT_MODEL,
+    CACHE_PATH,
+    AGY_BIN
+)
 
 __version__ = "2.0.0"
-
-CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
-DEFAULT_MODEL = "gemini-3.7-flash-high"
-AGY_BIN = os.environ.get("AGY_BIN") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
 
 STOPWORDS = {
     # German (de)
@@ -169,7 +171,9 @@ def get_existing_database_inventory() -> dict:
         }
 
 def get_cached_model() -> str:
-    """Read cached model from disk if available, otherwise return default."""
+    """Read model from config (.env/env var) or cached file on disk, otherwise return default."""
+    if MODEL_NAME and MODEL_NAME != DEFAULT_MODEL:
+        return MODEL_NAME
     if os.path.exists(CACHE_PATH):
         try:
             with open(CACHE_PATH, "r", encoding="utf-8") as f:
@@ -178,7 +182,7 @@ def get_cached_model() -> str:
                     return val
         except Exception:
             pass
-    return DEFAULT_MODEL
+    return MODEL_NAME or DEFAULT_MODEL
 
 def discover_and_cache_latest_flash_low_model() -> str:
     """Scan agy models list for the newest Gemini Flash model and persist it to disk."""

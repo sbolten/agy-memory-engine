@@ -9,7 +9,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("AGY_MEMORY_DB", os.path.expanduser("~/.gemini/memory.db"))
+from config import DB_PATH
 
 # Protected categories that require explicit confirmation before overwrite in sync-turn
 PROTECTED_CATEGORIES = frozenset({"health", "finance", "pension", "insurance", "user"})
