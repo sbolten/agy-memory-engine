@@ -457,6 +457,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="badge">DB: <b id="lbl-db-size">-</b></div>
       <button class="btn btn-secondary" onclick="switchTab('audit')">📜 Audit Log</button>
       <button class="btn btn-secondary" onclick="fetchData(true)">🔄 Refresh</button>
+      <button class="btn btn-secondary" id="btn-optimize" onclick="optimizeDb()" title="Rebuild FTS5 indexes, VACUUM DB, consolidate facts, and age episodes">🧹 Optimize DB</button>
       <button class="btn" onclick="forceWorker()">⚡ Force Queue</button>
     </div>
   </header>
@@ -1176,6 +1177,41 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
+    async function optimizeDb() {
+      if (!confirm('Run full memory optimization?\n\nThis will:\n• Create a snapshot backup in ~/.gemini/archive\n• Age episodes (active -> cooling -> historic)\n• Consolidate & deduplicate facts via LLM\n• Prune old queue turns (> 7 days)\n• Rebuild FTS5 full-text search indexes\n• VACUUM the SQLite database')) return;
+
+      const btn = document.getElementById('btn-optimize');
+      const origText = btn ? btn.innerText : '🧹 Optimize DB';
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ Optimizing...';
+      }
+
+      try {
+        const res = await fetch('/api/optimize', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          alert(data.message || 'Database optimization completed successfully!');
+        } else {
+          alert('Optimization failed: ' + (data.message || data.error || 'Unknown error'));
+        }
+        lastRenderedFactsHash = '';
+        lastRenderedEpisodesHash = '';
+        lastRenderedLearningsHash = '';
+        lastRenderedGraphHash = '';
+        lastRenderedAuditHash = '';
+        lastRenderedQueueHash = '';
+        fetchData(true);
+      } catch (e) {
+        alert('Optimization error: ' + e);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = origText;
+        }
+      }
+    }
+
     function escapeHtml(text) {
       if (!text) return '';
       return String(text)
@@ -1266,6 +1302,26 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
             try:
                 prune_processed_turns(days=0)
                 self._send_json({"status": "ok", "message": "All processed and skipped turns have been purged from the queue."})
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)}, status=500)
+            return
+
+        if url.path == "/api/optimize":
+            import subprocess
+            try:
+                main_bin = BASE_DIR / "agy_memory.py"
+                res = subprocess.run(
+                    [sys.executable, str(main_bin), "optimize", "--apply"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                output = (res.stdout or "").strip()
+                err = (res.stderr or "").strip()
+                if res.returncode == 0:
+                    self._send_json({"status": "ok", "message": output or "Database optimization completed successfully."})
+                else:
+                    self._send_json({"status": "error", "message": err or output or f"Process exited with code {res.returncode}"}, status=500)
             except Exception as e:
                 self._send_json({"status": "error", "message": str(e)}, status=500)
             return

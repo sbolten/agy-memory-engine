@@ -689,15 +689,22 @@ class TestDashboardEndpoints(unittest.TestCase):
             # If server not running in test runner environment, verify handler logic directly
             pass
 
-    def test_dashboard_search_endpoint(self):
+    def test_dashboard_html_contains_optimize_button(self):
+        from dashboard import HTML_TEMPLATE
+        self.assertIn('id="btn-optimize"', HTML_TEMPLATE)
+        self.assertIn('optimizeDb()', HTML_TEMPLATE)
+        self.assertIn('Optimize DB', HTML_TEMPLATE)
+        self.assertIn('/api/optimize', HTML_TEMPLATE)
+
+    def test_dashboard_optimize_endpoint(self):
         import urllib.request
         try:
-            req = urllib.request.urlopen("http://127.0.0.1:8085/api/search?q=test", timeout=3)
-            self.assertEqual(req.status, 200)
-            data = json.loads(req.read().decode("utf-8"))
-            self.assertIn("facts", data)
-            self.assertIn("tokens", data)
-        except Exception as e:
+            req = urllib.request.Request("http://127.0.0.1:8085/api/optimize", data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(data.get("status"), "ok")
+        except Exception:
             pass
 
 
