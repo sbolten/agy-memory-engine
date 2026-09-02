@@ -124,6 +124,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       gap: 10px;
       align-items: center;
       font-size: 0.85rem;
+      flex-wrap: wrap;
     }
     .badge {
       background: var(--card-bg);
@@ -135,10 +136,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     .badge b { color: var(--accent); }
 
-    /* Top Stats Grid */
+    /* Interactive Top Stats Grid (Primary Navigation) */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
       gap: 15px;
       margin-bottom: 25px;
     }
@@ -146,33 +147,44 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 8px;
-      padding: 15px;
+      padding: 14px;
       position: relative;
       overflow: hidden;
-      transition: transform 0.15s ease, border-color 0.15s ease;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
     }
-    .stat-card:hover { border-color: var(--accent); }
+    .stat-card:hover {
+      border-color: #58a6ff88;
+      transform: translateY(-2px);
+    }
+    .stat-card.active {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.08);
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
     .stat-card::before {
       content: '';
       position: absolute;
       top: 0; left: 0; right: 0; height: 3px;
       background: var(--accent);
     }
-    .stat-card.c-facts::before { background: var(--accent); }
+    .stat-card.c-search::before { background: var(--accent); }
+    .stat-card.c-queue::before { background: var(--warning); }
+    .stat-card.c-facts::before { background: #58a6ff; }
     .stat-card.c-episodes::before { background: var(--purple); }
     .stat-card.c-learnings::before { background: var(--cyan); }
     .stat-card.c-links::before { background: var(--success); }
-    .stat-card.c-queue::before { background: var(--warning); }
 
     .stat-label {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 5px;
+      margin-bottom: 4px;
     }
     .stat-val {
-      font-size: 1.8rem;
+      font-size: 1.6rem;
       font-weight: 700;
       color: var(--text-bright);
     }
@@ -180,35 +192,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       font-size: 0.75rem;
       color: var(--text-muted);
       margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    /* Tabs */
-    .tabs {
-      display: flex;
-      gap: 8px;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 20px;
-      overflow-x: auto;
-    }
-    .tab-btn {
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      padding: 10px 16px;
-      font-size: 0.9rem;
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      transition: all 0.2s;
-    }
-    .tab-btn:hover { color: var(--text-bright); }
-    .tab-btn.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
-    }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
@@ -219,15 +207,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       margin-bottom: 20px;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      padding: 8px 12px;
+      padding: 10px 14px;
       border-radius: 8px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .search-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 10px var(--accent-glow);
     }
     .search-box input {
       flex: 1;
       background: none;
       border: none;
       color: var(--text-bright);
-      font-size: 1rem;
+      font-size: 1.05rem;
       outline: none;
     }
     .search-meta {
@@ -391,49 +384,44 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="header-meta">
       <div class="badge">Model: <b id="lbl-model">-</b></div>
       <div class="badge">DB: <b id="lbl-db-size">-</b></div>
+      <button class="btn btn-secondary" onclick="switchTab('audit')">📜 Audit Log</button>
       <button class="btn btn-secondary" onclick="fetchData(true)">🔄 Refresh</button>
       <button class="btn" onclick="forceWorker()">⚡ Force Queue</button>
     </div>
   </header>
 
-  <!-- Top Stats Grid -->
+  <!-- Interactive Primary Navigation (6 Connected Stat Cards) -->
   <div class="stats-grid">
-    <div class="stat-card c-facts">
+    <div class="stat-card c-search active" id="card-search" onclick="switchTab('search')">
+      <div class="stat-label">Search Sandbox</div>
+      <div class="stat-val" style="font-size: 1.45rem;">🔍 Live FTS5</div>
+      <div class="stat-sub">Multilingual Hybrid Query</div>
+    </div>
+    <div class="stat-card c-queue" id="card-queue" onclick="switchTab('queue')">
+      <div class="stat-label">Turn Queue</div>
+      <div class="stat-val" id="cnt-queue">0</div>
+      <div class="stat-sub" id="lbl-queue-sub">0 pending (idle)</div>
+    </div>
+    <div class="stat-card c-facts" id="card-facts" onclick="switchTab('facts')">
       <div class="stat-label">Layer 1: Facts</div>
       <div class="stat-val" id="cnt-facts">0</div>
       <div class="stat-sub">Atomic Master Data & Specs</div>
     </div>
-    <div class="stat-card c-episodes">
+    <div class="stat-card c-episodes" id="card-episodes" onclick="switchTab('episodes')">
       <div class="stat-label">Layer 2: Episodes</div>
       <div class="stat-val" id="cnt-episodes">0</div>
       <div class="stat-sub">Narratives & Topic Dossiers</div>
     </div>
-    <div class="stat-card c-learnings">
+    <div class="stat-card c-learnings" id="card-learnings" onclick="switchTab('learnings')">
       <div class="stat-label">Layer 3: Learnings</div>
       <div class="stat-val" id="cnt-learnings">0</div>
       <div class="stat-sub">Heuristics & Rules of Thumb</div>
     </div>
-    <div class="stat-card c-links">
+    <div class="stat-card c-links" id="card-graph" onclick="switchTab('graph')">
       <div class="stat-label">Layer 4: Relations</div>
       <div class="stat-val" id="cnt-links">0</div>
-      <div class="stat-sub">Knowledge Graph Entity Links</div>
+      <div class="stat-sub">Entity Knowledge Graph</div>
     </div>
-    <div class="stat-card c-queue" style="cursor:pointer;" onclick="switchTab('queue')" title="Click to open Turn Queue Inspector">
-      <div class="stat-label">Turn Queue</div>
-      <div class="stat-val" id="cnt-queue">0</div>
-      <div class="stat-sub" id="lbl-queue-sub">0 pending</div>
-    </div>
-  </div>
-
-  <!-- Tabs Navigation -->
-  <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('search')">🔍 Live Search Sandbox</button>
-    <button class="tab-btn" onclick="switchTab('queue')">⚡ Turn Queue & Debounce</button>
-    <button class="tab-btn" onclick="switchTab('facts')">🧱 Facts (<span id="tab-cnt-facts">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('episodes')">📖 Episodes (<span id="tab-cnt-episodes">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('learnings')">💡 Learnings (<span id="tab-cnt-learnings">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('graph')">🕸️ Entity Graph (<span id="tab-cnt-graph">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('audit')">📜 Audit Log</button>
   </div>
 
   <!-- TAB 1: Search Sandbox -->
@@ -498,6 +486,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <!-- TAB 7: Audit Log -->
   <div id="tab-audit" class="tab-content">
+    <h3 style="font-size:1.1rem; color:var(--text-bright); margin-bottom:15px;">Consolidation & Deduplication Audit Log</h3>
     <div id="audit-items"></div>
   </div>
 
@@ -516,12 +505,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let lastRenderedAuditHash = '';
 
     function switchTab(name) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
+      const activeCard = document.getElementById('card-' + name);
+      if (activeCard) activeCard.classList.add('active');
+
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.getAttribute('onclick').includes(name));
-      if (activeBtn) activeBtn.classList.add('active');
       const targetTab = document.getElementById('tab-' + name);
       if (targetTab) targetTab.classList.add('active');
+
+      if (name === 'search') {
+        const inp = document.getElementById('inp-search');
+        if (inp) setTimeout(() => inp.focus(), 50);
+      }
     }
 
     function onTurnDetailToggle(turnId, isOpen) {
@@ -557,11 +552,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const qCnt = data.counts.queue_pending || 0;
         document.getElementById('cnt-queue').innerText = qCnt;
         document.getElementById('lbl-queue-sub').innerText = qCnt === 0 ? '0 pending (idle)' : `${qCnt} waiting for debounce`;
-
-        document.getElementById('tab-cnt-facts').innerText = data.counts.facts || 0;
-        document.getElementById('tab-cnt-episodes').innerText = data.counts.episodes || 0;
-        document.getElementById('tab-cnt-learnings').innerText = data.counts.learnings || 0;
-        document.getElementById('tab-cnt-graph').innerText = data.counts.links || 0;
 
         renderQueue(data.queue, forceDomRefresh);
         renderFacts(data.facts, forceDomRefresh);
