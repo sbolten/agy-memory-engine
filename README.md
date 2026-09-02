@@ -1,7 +1,7 @@
-# AGY Memory Engine (v1.3.0)
+# AGY Memory Engine (v2.0.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 33/33 Passing](https://img.shields.io/badge/Tests-33%2F33%20Passed-brightgreen.svg)]()
+[![Tests: 34/34 Passing](https://img.shields.io/badge/Tests-34%2F34%20Passed-brightgreen.svg)]()
 
 > Lightweight, high-performance, standalone dynamic cognitive memory layer for Google Antigravity (`agy`) and autonomous agent frameworks.
 

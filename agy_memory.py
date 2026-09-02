@@ -22,7 +22,7 @@ from contextlib import contextmanager
 
 from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"
 
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", os.path.expanduser("~/.gemini/memory_model_cache.txt"))
 DEFAULT_MODEL = "gemini-3.7-flash-high"
