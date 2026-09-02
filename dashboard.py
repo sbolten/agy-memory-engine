@@ -30,7 +30,12 @@ from config import (
 )
 from schema import db_session
 from agy_memory import extract_multilingual_tokens, get_all_vocabulary
-from queue_manager import get_pending_stats, get_pending_turns, get_recent_turns
+from queue_manager import (
+    get_pending_stats,
+    get_pending_turns,
+    get_recent_turns,
+    prune_processed_turns
+)
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -144,7 +149,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       padding: 15px;
       position: relative;
       overflow: hidden;
+      transition: transform 0.15s ease, border-color 0.15s ease;
     }
+    .stat-card:hover { border-color: var(--accent); }
     .stat-card::before {
       content: '';
       position: absolute;
@@ -259,11 +266,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       border-radius: 12px;
       font-weight: 500;
       border: 1px solid var(--card-border);
+      background: transparent;
+      color: var(--text-muted);
     }
     .pill.active { background: rgba(63, 185, 80, 0.15); color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
     .pill.cooling { background: rgba(210, 153, 34, 0.15); color: var(--warning); border-color: rgba(210, 153, 34, 0.4); }
     .pill.historic { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); border-color: rgba(139, 148, 158, 0.4); }
     .pill.resolved { background: rgba(57, 197, 207, 0.15); color: var(--cyan); border-color: rgba(57, 197, 207, 0.4); }
+    .pill.danger { background: rgba(248, 81, 73, 0.15); color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
     .pill.category { background: rgba(88, 166, 255, 0.1); color: var(--accent); }
 
     .item-body {
@@ -381,7 +391,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="header-meta">
       <div class="badge">Model: <b id="lbl-model">-</b></div>
       <div class="badge">DB: <b id="lbl-db-size">-</b></div>
-      <button class="btn btn-secondary" onclick="fetchData()">🔄 Refresh</button>
+      <button class="btn btn-secondary" onclick="fetchData(true)">🔄 Refresh</button>
       <button class="btn" onclick="forceWorker()">⚡ Force Queue</button>
     </div>
   </header>
@@ -455,11 +465,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
       <h3 style="font-size:1.1rem; color:var(--text-bright);">Conversation Turn Queue Inspector</h3>
-      <div class="queue-filters" style="display:flex; gap:6px;">
+      <div class="queue-filters" style="display:flex; gap:6px; align-items:center;">
         <button class="pill active q-filter-btn" style="cursor:pointer;" onclick="filterQueue('all', event)">All</button>
         <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('pending', event)">Pending</button>
         <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('processed', event)">Processed</button>
         <button class="pill q-filter-btn" style="cursor:pointer;" onclick="filterQueue('skipped', event)">Skipped</button>
+        <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 0.7rem; margin-left:6px;" onclick="clearProcessedQueue()" title="Purge processed turns older than 0 days">🗑️ Clear Processed</button>
       </div>
     </div>
     <div id="queue-items"></div>
@@ -493,15 +504,45 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <script>
     let rawData = null;
     let searchTimer = null;
+    const openTurnDetails = new Set();
+    let currentQueueFilter = 'all';
+
+    // State caches to avoid unnecessary DOM re-creation
+    let lastRenderedQueueHash = '';
+    let lastRenderedFactsHash = '';
+    let lastRenderedEpisodesHash = '';
+    let lastRenderedLearningsHash = '';
+    let lastRenderedGraphHash = '';
+    let lastRenderedAuditHash = '';
 
     function switchTab(name) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      event.currentTarget.classList.add('active');
-      document.getElementById('tab-' + name).classList.add('active');
+      const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.getAttribute('onclick').includes(name));
+      if (activeBtn) activeBtn.classList.add('active');
+      const targetTab = document.getElementById('tab-' + name);
+      if (targetTab) targetTab.classList.add('active');
     }
 
-    async function fetchData() {
+    function onTurnDetailToggle(turnId, isOpen) {
+      if (isOpen) {
+        openTurnDetails.add(turnId);
+      } else {
+        openTurnDetails.delete(turnId);
+      }
+    }
+
+    function filterQueue(status, ev) {
+      currentQueueFilter = status;
+      document.querySelectorAll('.q-filter-btn').forEach(b => b.classList.remove('active'));
+      if (ev && ev.target) ev.target.classList.add('active');
+      lastRenderedQueueHash = ''; // force re-render
+      if (rawData && rawData.queue) {
+        renderQueue(rawData.queue, true);
+      }
+    }
+
+    async function fetchData(forceDomRefresh = false) {
       try {
         const res = await fetch('/api/stats');
         const data = await res.json();
@@ -511,6 +552,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         document.getElementById('lbl-db-size').innerText = data.db_size || '-';
         document.getElementById('cnt-facts').innerText = data.counts.facts || 0;
         document.getElementById('cnt-episodes').innerText = data.counts.episodes || 0;
+        document.getElementById('cnt-learnings').innerText = data.counts.learnings || 0;
+        document.getElementById('cnt-links').innerText = data.counts.links || 0;
         const qCnt = data.counts.queue_pending || 0;
         document.getElementById('cnt-queue').innerText = qCnt;
         document.getElementById('lbl-queue-sub').innerText = qCnt === 0 ? '0 pending (idle)' : `${qCnt} waiting for debounce`;
@@ -520,29 +563,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         document.getElementById('tab-cnt-learnings').innerText = data.counts.learnings || 0;
         document.getElementById('tab-cnt-graph').innerText = data.counts.links || 0;
 
-        renderQueue(data.queue);
-        renderFacts(data.facts);
-        renderEpisodes(data.episodes);
-        renderLearnings(data.learnings);
-        renderGraph(data.links);
-        renderAudit(data.audit);
+        renderQueue(data.queue, forceDomRefresh);
+        renderFacts(data.facts, forceDomRefresh);
+        renderEpisodes(data.episodes, forceDomRefresh);
+        renderLearnings(data.learnings, forceDomRefresh);
+        renderGraph(data.links, forceDomRefresh);
+        renderAudit(data.audit, forceDomRefresh);
       } catch (e) {
         console.error("Failed to load dashboard data", e);
       }
     }
 
-    let currentQueueFilter = 'all';
-
-    function filterQueue(status, ev) {
-      currentQueueFilter = status;
-      document.querySelectorAll('.q-filter-btn').forEach(b => b.classList.remove('active'));
-      if (ev && ev.target) ev.target.classList.add('active');
-      if (rawData && rawData.queue) {
-        renderQueue(rawData.queue);
-      }
-    }
-
-    function renderQueue(queue) {
+    function renderQueue(queue, force = false) {
       const qCont = document.getElementById('queue-items');
       const debLbl = document.getElementById('lbl-debounce-text');
       const prog = document.getElementById('progress-debounce');
@@ -561,6 +593,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         ? allTurns
         : allTurns.filter(t => t.status === currentQueueFilter);
 
+      const currentHash = currentQueueFilter + '::' + JSON.stringify(filteredTurns);
+      if (!force && currentHash === lastRenderedQueueHash) {
+        return; // Skip rebuilding DOM if data did not change
+      }
+      lastRenderedQueueHash = currentHash;
+
       if (filteredTurns.length === 0) {
         qCont.innerHTML = `<p style="color:var(--text-muted); padding:30px; text-align:center;">No ${currentQueueFilter !== 'all' ? currentQueueFilter : ''} turns found in queue.</p>`;
         return;
@@ -573,6 +611,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (t.status === 'failed') statusClass = 'danger';
 
         const isPending = t.status === 'pending';
+        const isOpen = openTurnDetails.has(t.id);
 
         return `
           <div class="item-card" style="border-left: 3px solid ${isPending ? 'var(--warning)' : (t.status === 'processed' ? 'var(--success)' : 'var(--card-border)')}; margin-bottom:14px;">
@@ -589,11 +628,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div style="color:var(--text-bright); font-size:0.9rem; white-space:pre-wrap;">${escapeHtml(t.user_prompt)}</div>
             </div>
 
-            <details style="background:rgba(255, 255, 255, 0.03); border-radius:6px; padding:8px 12px; margin-bottom:10px;">
+            <details ${isOpen ? 'open' : ''} ontoggle="onTurnDetailToggle(${t.id}, this.open)" style="background:rgba(255, 255, 255, 0.03); border-radius:6px; padding:8px 12px; margin-bottom:10px;">
               <summary style="cursor:pointer; font-size:0.8rem; color:var(--text-muted); font-weight:500;">
                 🤖 Assistant Response (${(t.assistant_response || '').length} chars) — Click to view
               </summary>
-              <div style="color:var(--text); font-size:0.85rem; margin-top:8px; white-space:pre-wrap; max-height:260px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">
+              <div style="color:var(--text); font-size:0.85rem; margin-top:8px; white-space:pre-wrap; max-height:280px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">
                 ${escapeHtml(t.assistant_response || '')}
               </div>
             </details>
@@ -619,8 +658,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }).join('');
     }
 
-    function renderFacts(facts) {
+    function renderFacts(facts, force = false) {
       const cont = document.getElementById('facts-items');
+      const hash = JSON.stringify(facts || []);
+      if (!force && hash === lastRenderedFactsHash) return;
+      lastRenderedFactsHash = hash;
+
       if (!facts || facts.length === 0) {
         cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No facts stored.</p>';
         return;
@@ -640,8 +683,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('');
     }
 
-    function renderEpisodes(episodes) {
+    function renderEpisodes(episodes, force = false) {
       const cont = document.getElementById('episodes-items');
+      const hash = JSON.stringify(episodes || []);
+      if (!force && hash === lastRenderedEpisodesHash) return;
+      lastRenderedEpisodesHash = hash;
+
       if (!episodes || episodes.length === 0) {
         cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No episodes stored.</p>';
         return;
@@ -662,8 +709,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('');
     }
 
-    function renderLearnings(learnings) {
+    function renderLearnings(learnings, force = false) {
       const cont = document.getElementById('learnings-items');
+      const hash = JSON.stringify(learnings || []);
+      if (!force && hash === lastRenderedLearningsHash) return;
+      lastRenderedLearningsHash = hash;
+
       if (!learnings || learnings.length === 0) {
         cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No learnings stored.</p>';
         return;
@@ -683,8 +734,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('');
     }
 
-    function renderGraph(links) {
+    function renderGraph(links, force = false) {
       const cont = document.getElementById('graph-items');
+      const hash = JSON.stringify(links || []);
+      if (!force && hash === lastRenderedGraphHash) return;
+      lastRenderedGraphHash = hash;
+
       if (!links || links.length === 0) {
         cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No entity relationships stored.</p>';
         return;
@@ -701,8 +756,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('');
     }
 
-    function renderAudit(audit) {
+    function renderAudit(audit, force = false) {
       const cont = document.getElementById('audit-items');
+      const hash = JSON.stringify(audit || []);
+      if (!force && hash === lastRenderedAuditHash) return;
+      lastRenderedAuditHash = hash;
+
       if (!audit || audit.length === 0) {
         cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No consolidation logs recorded.</p>';
         return;
@@ -785,9 +844,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const res = await fetch('/api/force-worker', { method: 'POST' });
         const data = await res.json();
         alert(data.message || 'Worker finished successfully!');
-        fetchData();
+        lastRenderedQueueHash = '';
+        fetchData(true);
       } catch (e) {
         alert('Worker execution error: ' + e);
+      }
+    }
+
+    async function clearProcessedQueue() {
+      if (!confirm('Purge all processed and skipped conversation turns from the queue database?')) return;
+      try {
+        const res = await fetch('/api/clear-processed-queue', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || 'Processed turns cleared.');
+        lastRenderedQueueHash = '';
+        fetchData(true);
+      } catch (e) {
+        alert('Error clearing queue: ' + e);
       }
     }
 
@@ -873,6 +946,14 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
                 worker_bin = BASE_DIR / "memory_worker.py"
                 res = subprocess.run([sys.executable, str(worker_bin), "--force"], capture_output=True, text=True, timeout=60)
                 self._send_json({"status": "ok", "message": res.stdout.strip() or "Queue processed successfully."})
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)}, status=500)
+            return
+
+        if url.path == "/api/clear-processed-queue":
+            try:
+                prune_processed_turns(days=0)
+                self._send_json({"status": "ok", "message": "All processed and skipped turns have been purged from the queue."})
             except Exception as e:
                 self._send_json({"status": "error", "message": str(e)}, status=500)
             return

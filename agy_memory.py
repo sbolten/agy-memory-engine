@@ -1126,6 +1126,13 @@ def optimize_db(apply_changes: bool = False, age_decay: bool = True, consolidate
         else:
             print("[CONSOLIDATE] No redundant facts detected across categories.")
 
+    # Prune old processed queue turns (> 7 days)
+    try:
+        from queue_manager import prune_processed_turns
+        prune_processed_turns(days=7)
+    except Exception:
+        pass
+
     with db_session() as conn:
         cursor = conn.cursor()
 
