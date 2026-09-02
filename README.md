@@ -202,6 +202,41 @@ AGY_BIN=agy
 
 ---
 
+## ⏰ Autonomous Background Pipeline (Cron & Lifecycle Hooks)
+
+To enable 100% autonomous background learning without manual intervention, configure the **AGY Lifecycle Hook** and the **Linux Crontab**:
+
+### 1. Global Lifecycle Hook (`~/.gemini/config/hooks.json`)
+
+Registers the sub-millisecond transcript collector on every agent turn stop:
+
+```json
+{
+  "memory-auto-sync": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 /opt/agy-memory-engine/scripts/auto_sync_hook.py",
+        "timeout": 15
+      }
+    ]
+  }
+}
+```
+
+### 2. Crontab Configuration (`crontab -e`)
+
+```bash
+# Process pending memory queue every 5 minutes (debounced)
+*/5 * * * * python3 /opt/agy-memory-engine/memory_worker.py >/dev/null 2>&1
+
+# Nightly memory decay aging, duplicate consolidation & VACUUM (04:30)
+30 4 * * * python3 /opt/agy-memory-engine/agy_memory.py optimize --apply >/dev/null 2>&1
+```
+
+---
+
 ## 🧪 Testing
 
 ```bash
