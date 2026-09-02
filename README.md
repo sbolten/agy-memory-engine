@@ -100,7 +100,24 @@ python3 agy_memory.py optimize --apply
 
 ---
 
-## 🔌 Model Context Protocol (MCP) Setup
+## 🔌 Model Context Protocol (MCP) Server
+
+The engine includes a native FastMCP server (`agy_memory_mcp.py`) that equips autonomous AI agents (Antigravity, Claude, Cursor, OpenCode) with explicit memory reading and writing capabilities:
+
+### Available MCP Tools
+
+| Tool | Description | Key Parameters |
+| :--- | :--- | :--- |
+| `search_memory` | Hybrid multilingual search across Facts, Episodes, Learnings & Graph relations | `query` *(str)*, `limit` *(int, default: 5)* |
+| `store_memory` | Store or update an atomic configuration parameter or fact (Layer 1) | `id`, `fact`, `category`, `keywords` |
+| `record_episode` | Record a rich narrative chronicle, ongoing topic, or history (Layer 2) | `id`, `topic`, `title`, `narrative`, `status`, `stance` |
+| `record_learning` | Record a practical heuristic, tested rule of thumb, or stance (Layer 3) | `id`, `category`, `insight`, `context`, `keywords` |
+| `link_entities_mcp` | Create directional knowledge graph links between memory entities (Layer 4) | `source_id`, `target_id`, `relation` |
+| `list_memories` | Full multi-layer inventory export of all stored memories | — |
+
+### MCP Configuration
+
+Add to your MCP settings file (e.g. `~/.gemini/antigravity-cli/mcp_config.json` or Claude/Cursor config):
 
 ```json
 {
@@ -118,11 +135,44 @@ python3 agy_memory.py optimize --apply
 
 ---
 
+## 📱 Seamless Integration with Antigravity Telegram Bot
+
+`agy-memory-engine` is designed to work in synergy with the [Antigravity Telegram Bot (`antigravity-cli-telegram-bot`)](https://github.com/sbolten/antigravity-cli-telegram-bot) to form a completely autonomous, mobile memory pipeline:
+
+```text
+  📱 Mobile User in Telegram (Voice, Text, Photos, Topics)
+            │
+            ▼
+  🤖 AGY Telegram Bot (/opt/agy-telegram-bot)
+            │  (Executes standard agy prompt with --add-dir)
+            ▼
+  ⚡ AGY Global Stop-Hook (~/.gemini/config/hooks.json -> scripts/auto_sync_hook.py)
+            │  (Enqueues turn in <1ms to turn_queue.db, resolves Telegram topic/chat ID)
+            ▼
+  🧠 Calm Memory Worker (memory_worker.py)
+            │  (Debounces 5m idle / 15m timeout, batches conversation into 1 LLM pass)
+            ▼
+  💾 SQLite FTS5 Memory Store (~/.gemini/memory.db)
+            │
+            ▼
+  📲 Instant Status Notification back to Telegram Topic / Chat
+     "🧠 Autonomes Gedächtnis aktualisiert (1 Fakt, 1 Learning)
+      • ➕ Beelink Host IP is 100.114.118.47
+      • ➕ Use CDP browser for Google Flights"
+```
+
+### Key Synergy Highlights:
+1. **Zero Chat Latency:** The global stop-hook returns in `< 1ms`, ensuring the Telegram Bot responds instantly without waiting for memory extraction.
+2. **Context-Aware Topic Routing:** The worker automatically preserves the originating Telegram `chat_id` and `message_thread_id`, routing notifications directly back into the relevant topic thread.
+3. **Loop Prevention:** Ingestion runs under `AGY_INTERNAL_INVOCATION=1` with prompt marker guards to prevent recursive agent loops.
+
+---
+
 ## 🧪 Testing
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 33 tests in 1.5s (OK)
+# Ran 37 tests in 1.4s (OK)
 ```
 
 ---
