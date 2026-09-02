@@ -698,17 +698,152 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         return;
       }
 
-      qCont.innerHTML = filteredTurns.map(t => {
+      // Group turns:
+      // - 'pending' turns are rendered individually / as pending queue entries
+      // - turns sharing the same 'batch_id' are grouped into a consolidated batch card
+      // - legacy turns without 'batch_id' are rendered as standalone items
+      const groups = [];
+      const batchMap = new Map();
+
+      for (const t of filteredTurns) {
+        if (t.status === 'pending') {
+          groups.push({ type: 'pending', turn: t });
+        } else if (t.batch_id) {
+          if (!batchMap.has(t.batch_id)) {
+            const batchGroup = {
+              type: 'batch',
+              batch_id: t.batch_id,
+              status: t.status,
+              summary: t.extracted_summary,
+              error: t.error,
+              processed_at: t.processed_at || t.created_at,
+              turns: []
+            };
+            batchMap.set(t.batch_id, batchGroup);
+            groups.push(batchGroup);
+          }
+          batchMap.get(t.batch_id).turns.push(t);
+        } else {
+          groups.push({ type: 'legacy', turn: t });
+        }
+      }
+
+      qCont.innerHTML = groups.map(g => {
+        if (g.type === 'pending') {
+          const t = g.turn;
+          const isOpen = openTurnDetails.has(t.id);
+          return `
+            <div class="item-card" style="border-left: 3px solid var(--warning); margin-bottom:14px;">
+              <div class="item-header">
+                <span class="item-id">Turn #${t.id} <span style="font-weight:normal; color:var(--text-muted)">[${t.source || 'telegram'}]</span></span>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <span class="pill cooling">PENDING</span>
+                  <span style="font-size:0.75rem; color:var(--text-muted);">${t.created_at}</span>
+                </div>
+              </div>
+              
+              <div style="background:rgba(88, 166, 255, 0.08); border-radius:6px; padding:10px 12px; margin-bottom:10px; border-left:3px solid var(--accent);">
+                <div style="font-size:0.75rem; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:4px;">👤 User Prompt</div>
+                <div style="color:var(--text-bright); font-size:0.9rem; white-space:pre-wrap;">${escapeHtml(t.user_prompt)}</div>
+              </div>
+
+              <details ${isOpen ? 'open' : ''} ontoggle="onTurnDetailToggle(${t.id}, this.open)" style="background:rgba(255, 255, 255, 0.03); border-radius:6px; padding:8px 12px; margin-bottom:10px;">
+                <summary style="cursor:pointer; font-size:0.8rem; color:var(--text-muted); font-weight:500;">
+                  🤖 Assistant Response (${(t.assistant_response || '').length} chars) — Click to view
+                </summary>
+                <div style="color:var(--text); font-size:0.85rem; margin-top:8px; white-space:pre-wrap; max-height:280px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">
+                  ${escapeHtml(t.assistant_response || '')}
+                </div>
+              </details>
+
+              <div class="item-meta">
+                <span><b>Chat ID:</b> ${t.chat_id || '-'}</span>
+                <span><b>Status:</b> Wartet auf Calm-Memory Debounce</span>
+              </div>
+            </div>
+          `;
+        }
+
+        if (g.type === 'batch') {
+          const b = g;
+          let statusClass = 'historic';
+          let borderCol = 'var(--card-border)';
+          if (b.status === 'processed') { statusClass = 'active'; borderCol = 'var(--success)'; }
+          if (b.status === 'failed') { statusClass = 'danger'; borderCol = 'var(--danger)'; }
+
+          const turnIdsStr = b.turns.map(t => '#' + t.id).join(', ');
+
+          return `
+            <div class="item-card" style="border-left: 4px solid ${borderCol}; margin-bottom:18px; background:rgba(22, 27, 34, 0.95); padding:16px;">
+              <div class="item-header" style="padding-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.06); margin-bottom:12px;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="font-weight:700; color:var(--text-bright); font-size:0.95rem; display:flex; align-items:center; gap:6px;">
+                    📦 Batch <span style="color:var(--accent); font-family:monospace;">${escapeHtml(b.batch_id)}</span>
+                  </span>
+                  <span class="pill" style="background:rgba(88, 166, 255, 0.12); color:var(--accent); border-color:rgba(88, 166, 255, 0.3);">
+                    ${b.turns.length} Turn${b.turns.length > 1 ? 's' : ''} gemeinsam verarbeitet (${turnIdsStr})
+                  </span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <span class="pill ${statusClass}">${b.status.toUpperCase()}</span>
+                  <span style="font-size:0.75rem; color:var(--text-muted); font-family:monospace;">${b.processed_at}</span>
+                </div>
+              </div>
+
+              ${b.summary ? `
+                <div style="background:rgba(63, 185, 80, 0.12); border:1px solid rgba(63, 185, 80, 0.25); border-radius:6px; padding:9px 12px; margin-bottom:12px; font-size:0.85rem; color:var(--success);">
+                  🧠 <b>Extrahierte Knowledge (aus diesem Batch):</b> ${escapeHtml(b.summary)}
+                </div>
+              ` : ''}
+
+              ${b.error ? `
+                <div style="background:rgba(248, 81, 73, 0.12); border:1px solid rgba(248, 81, 73, 0.25); border-radius:6px; padding:9px 12px; margin-bottom:12px; font-size:0.85rem; color:var(--danger);">
+                  ⚠️ <b>Error:</b> ${escapeHtml(b.error)}
+                </div>
+              ` : ''}
+
+              <div style="display:flex; flex-direction:column; gap:10px;">
+                ${b.turns.map(t => {
+                  const isOpen = openTurnDetails.has(t.id);
+                  return `
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); border-radius:6px; padding:10px 12px;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span style="font-family:monospace; font-weight:600; color:var(--accent); font-size:0.85rem;">
+                          Turn #${t.id} <span style="font-weight:normal; color:var(--text-muted)">[${t.source || 'telegram'}]</span>
+                        </span>
+                        <span style="font-size:0.75rem; color:var(--text-muted);">${t.created_at}</span>
+                      </div>
+
+                      <div style="background:rgba(88, 166, 255, 0.06); border-radius:5px; padding:8px 10px; margin-bottom:6px; border-left:3px solid var(--accent);">
+                        <div style="font-size:0.7rem; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:2px;">👤 User Prompt</div>
+                        <div style="color:var(--text-bright); font-size:0.85rem; white-space:pre-wrap;">${escapeHtml(t.user_prompt)}</div>
+                      </div>
+
+                      <details ${isOpen ? 'open' : ''} ontoggle="onTurnDetailToggle(${t.id}, this.open)" style="background:rgba(255, 255, 255, 0.02); border-radius:5px; padding:6px 10px;">
+                        <summary style="cursor:pointer; font-size:0.75rem; color:var(--text-muted); font-weight:500;">
+                          🤖 Assistant Response (${(t.assistant_response || '').length} chars) — Click to view
+                        </summary>
+                        <div style="color:var(--text); font-size:0.8rem; margin-top:6px; white-space:pre-wrap; max-height:240px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.06); padding-top:6px;">
+                          ${escapeHtml(t.assistant_response || '')}
+                        </div>
+                      </details>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          `;
+        }
+
+        // Legacy unbatched turn
+        const t = g.turn;
         let statusClass = 'historic';
-        if (t.status === 'pending') statusClass = 'cooling';
         if (t.status === 'processed') statusClass = 'active';
         if (t.status === 'failed') statusClass = 'danger';
-
-        const isPending = t.status === 'pending';
         const isOpen = openTurnDetails.has(t.id);
 
         return `
-          <div class="item-card" style="border-left: 3px solid ${isPending ? 'var(--warning)' : (t.status === 'processed' ? 'var(--success)' : 'var(--card-border)')}; margin-bottom:14px;">
+          <div class="item-card" style="border-left: 3px solid ${t.status === 'processed' ? 'var(--success)' : 'var(--card-border)'}; margin-bottom:14px;">
             <div class="item-header">
               <span class="item-id">Turn #${t.id} <span style="font-weight:normal; color:var(--text-muted)">[${t.source || 'telegram'}]</span></span>
               <div style="display:flex; gap:8px; align-items:center;">

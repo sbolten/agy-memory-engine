@@ -14,6 +14,7 @@ from queue_manager import (
     enqueue_turn,
     get_pending_turns,
     get_pending_stats,
+    get_recent_turns,
     mark_turn_status,
     prune_processed_turns
 )
@@ -59,11 +60,41 @@ class TestQueueManager(unittest.TestCase):
         self.assertEqual(len(pending), 2)
         
         turn1_id = pending[0]["id"]
-        mark_turn_status([turn1_id], status="processed", summary="1 fact synced", db_path=self.db_path)
+        mark_turn_status([turn1_id], status="processed", summary="1 fact synced", batch_id="batch_20260902_090000", db_path=self.db_path)
 
         pending_after = get_pending_turns(limit=10, db_path=self.db_path)
         self.assertEqual(len(pending_after), 1)
         self.assertEqual(pending_after[0]["user_prompt"], "Frage 2")
+
+    def test_batch_tracking_in_recent_turns(self):
+        enqueue_turn("Turn 1", "Antwort 1", db_path=self.db_path)
+        enqueue_turn("Turn 2", "Antwort 2", db_path=self.db_path)
+        enqueue_turn("Turn 3", "Antwort 3", db_path=self.db_path)
+
+        pending = get_pending_turns(limit=10, db_path=self.db_path)
+        self.assertEqual(len(pending), 3)
+
+        turn_ids = [pending[0]["id"], pending[1]["id"]]
+        batch_name = "batch_20260902_120000"
+        mark_turn_status(turn_ids, status="processed", summary="2 facts extracted", batch_id=batch_name, db_path=self.db_path)
+
+        recent = get_recent_turns(limit=10, db_path=self.db_path)
+        self.assertEqual(len(recent), 3)
+
+        # Pending turn
+        turn3 = [t for t in recent if t["user_prompt"] == "Turn 3"][0]
+        self.assertEqual(turn3["status"], "pending")
+        self.assertIsNone(turn3["batch_id"])
+        self.assertIsNone(turn3["processed_at"])
+
+        # Batched turns
+        batched = [t for t in recent if t["user_prompt"] in ("Turn 1", "Turn 2")]
+        self.assertEqual(len(batched), 2)
+        for t in batched:
+            self.assertEqual(t["status"], "processed")
+            self.assertEqual(t["batch_id"], batch_name)
+            self.assertEqual(t["extracted_summary"], "2 facts extracted")
+            self.assertIsNotNone(t["processed_at"])
 
 
 class TestWorkerNotification(unittest.TestCase):

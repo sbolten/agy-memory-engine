@@ -11,6 +11,7 @@ import os
 import sys
 import fcntl
 import argparse
+import datetime
 import subprocess
 from pathlib import Path
 
@@ -132,6 +133,8 @@ def process_queue(batch_size: int = 25, notify: bool = True) -> int:
 
     turn_ids = [t["id"] for t in pending]
     notification_chat_id = pending[-1]["chat_id"] if pending[-1].get("chat_id") else None
+    now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_id = f"batch_{now_str}"
 
     dialogue_blocks = []
     for turn in pending:
@@ -142,7 +145,7 @@ def process_queue(batch_size: int = 25, notify: bool = True) -> int:
         dialogue_blocks.append(f"User: {u}\nAssistant: {a}")
 
     if not dialogue_blocks:
-        mark_turn_status(turn_ids, status="skipped", summary="All turns trivial")
+        mark_turn_status(turn_ids, status="skipped", summary="All turns trivial", batch_id=batch_id)
         prune_processed_turns(days=7)
         return len(turn_ids)
 
@@ -163,7 +166,7 @@ def process_queue(batch_size: int = 25, notify: bool = True) -> int:
         if changes.get("entity_links"): summary_parts.append(f"{len(changes['entity_links'])} links")
 
         summary = ", ".join(summary_parts) if summary_parts else "No persistent entities found"
-        mark_turn_status(turn_ids, status="processed", summary=summary)
+        mark_turn_status(turn_ids, status="processed", summary=summary, batch_id=batch_id)
 
         if has_changes and notify:
             msg = format_notification(changes)
@@ -171,7 +174,7 @@ def process_queue(batch_size: int = 25, notify: bool = True) -> int:
 
     except Exception as e:
         sys.stderr.write(f"Error during batch sync: {e}\n")
-        mark_turn_status(turn_ids, status="failed", error=str(e))
+        mark_turn_status(turn_ids, status="failed", error=str(e), batch_id=batch_id)
 
     prune_processed_turns(days=7)
     return len(turn_ids)

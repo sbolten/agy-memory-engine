@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from config import QUEUE_DB_PATH
 
 def init_queue_db(db_path: str = QUEUE_DB_PATH):
-    """Ensure the turn queue table exists with WAL mode."""
+    """Ensure the turn queue table exists with WAL mode and proper schema."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with sqlite3.connect(db_path, timeout=5.0) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -25,10 +25,22 @@ def init_queue_db(db_path: str = QUEUE_DB_PATH):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'pending',
                 extracted_summary TEXT,
-                error TEXT
+                error TEXT,
+                batch_id TEXT,
+                processed_at TIMESTAMP
             );
         """)
+        # Migrate existing table if missing batch_id or processed_at
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(turn_queue);")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "batch_id" not in columns:
+            conn.execute("ALTER TABLE turn_queue ADD COLUMN batch_id TEXT;")
+        if "processed_at" not in columns:
+            conn.execute("ALTER TABLE turn_queue ADD COLUMN processed_at TIMESTAMP;")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turn_queue_status ON turn_queue(status, id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_turn_queue_batch ON turn_queue(batch_id);")
 
 def enqueue_turn(user_prompt: str, assistant_response: str, source: str = "telegram", chat_id: str = None, db_path: str = QUEUE_DB_PATH) -> bool:
     """Fast non-blocking insert of a turn into the queue (< 1ms)."""
@@ -102,8 +114,8 @@ def get_pending_turns(limit: int = 25, db_path: str = QUEUE_DB_PATH) -> list:
             "created_at": r[5]
         } for r in rows]
 
-def mark_turn_status(turn_ids: list, status: str, summary: str = None, error: str = None, db_path: str = QUEUE_DB_PATH):
-    """Update status of processed turns."""
+def mark_turn_status(turn_ids: list, status: str, summary: str = None, error: str = None, batch_id: str = None, db_path: str = QUEUE_DB_PATH):
+    """Update status of processed turns and assign batch_id and processed_at timestamp."""
     if not turn_ids:
         return
     init_queue_db(db_path)
@@ -111,9 +123,9 @@ def mark_turn_status(turn_ids: list, status: str, summary: str = None, error: st
         placeholders = ",".join("?" for _ in turn_ids)
         conn.execute(f"""
             UPDATE turn_queue
-            SET status = ?, extracted_summary = ?, error = ?
+            SET status = ?, extracted_summary = ?, error = ?, batch_id = ?, processed_at = CURRENT_TIMESTAMP
             WHERE id IN ({placeholders})
-        """, [status, summary, error] + list(turn_ids))
+        """, [status, summary, error, batch_id] + list(turn_ids))
         conn.commit()
 
 def prune_processed_turns(days: int = 7, db_path: str = QUEUE_DB_PATH):
@@ -138,7 +150,7 @@ def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_D
         cursor = conn.cursor()
         if status:
             cursor.execute("""
-                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error
+                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error, batch_id, processed_at
                 FROM turn_queue
                 WHERE status = ?
                 ORDER BY id DESC
@@ -146,7 +158,7 @@ def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_D
             """, (status, limit))
         else:
             cursor.execute("""
-                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error
+                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error, batch_id, processed_at
                 FROM turn_queue
                 ORDER BY id DESC
                 LIMIT ?
@@ -161,6 +173,8 @@ def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_D
             "created_at": r[5],
             "status": r[6],
             "extracted_summary": r[7],
-            "error": r[8]
+            "error": r[8],
+            "batch_id": r[9],
+            "processed_at": r[10]
         } for r in rows]
 
