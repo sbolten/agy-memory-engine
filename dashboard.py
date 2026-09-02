@@ -34,7 +34,7 @@ from queue_manager import get_pending_stats, get_pending_turns
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -263,6 +263,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .pill.active { background: rgba(63, 185, 80, 0.15); color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
     .pill.cooling { background: rgba(210, 153, 34, 0.15); color: var(--warning); border-color: rgba(210, 153, 34, 0.4); }
     .pill.historic { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); border-color: rgba(139, 148, 158, 0.4); }
+    .pill.resolved { background: rgba(57, 197, 207, 0.15); color: var(--cyan); border-color: rgba(57, 197, 207, 0.4); }
     .pill.category { background: rgba(88, 166, 255, 0.1); color: var(--accent); }
 
     .item-body {
@@ -380,7 +381,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="header-meta">
       <div class="badge">Model: <b id="lbl-model">-</b></div>
       <div class="badge">DB: <b id="lbl-db-size">-</b></div>
-      <button class="btn btn-secondary" onclick="fetchData()">🔄 Aktualisieren</button>
+      <button class="btn btn-secondary" onclick="fetchData()">🔄 Refresh</button>
       <button class="btn" onclick="forceWorker()">⚡ Force Queue</button>
     </div>
   </header>
@@ -388,29 +389,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- Top Stats Grid -->
   <div class="stats-grid">
     <div class="stat-card c-facts">
-      <div class="stat-label">Layer 1: Fakten</div>
+      <div class="stat-label">Layer 1: Facts</div>
       <div class="stat-val" id="cnt-facts">0</div>
-      <div class="stat-sub">Atomare Konfigurationen & Daten</div>
+      <div class="stat-sub">Atomic Master Data & Specs</div>
     </div>
     <div class="stat-card c-episodes">
-      <div class="stat-label">Layer 2: Episoden</div>
+      <div class="stat-label">Layer 2: Episodes</div>
       <div class="stat-val" id="cnt-episodes">0</div>
-      <div class="stat-sub">Chroniken & Themendossiers</div>
+      <div class="stat-sub">Narratives & Topic Dossiers</div>
     </div>
     <div class="stat-card c-learnings">
       <div class="stat-label">Layer 3: Learnings</div>
       <div class="stat-val" id="cnt-learnings">0</div>
-      <div class="stat-sub">Praxisregeln & Heuristiken</div>
+      <div class="stat-sub">Heuristics & Rules of Thumb</div>
     </div>
     <div class="stat-card c-links">
-      <div class="stat-label">Layer 4: Relationen</div>
+      <div class="stat-label">Layer 4: Relations</div>
       <div class="stat-val" id="cnt-links">0</div>
-      <div class="stat-sub">Graph Entity Links</div>
+      <div class="stat-sub">Knowledge Graph Entity Links</div>
     </div>
     <div class="stat-card c-queue">
       <div class="stat-label">Turn Queue</div>
       <div class="stat-val" id="cnt-queue">0</div>
-      <div class="stat-sub" id="lbl-queue-sub">0 ausstehend</div>
+      <div class="stat-sub" id="lbl-queue-sub">0 pending</div>
     </div>
   </div>
 
@@ -418,21 +419,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('search')">🔍 Live Search Sandbox</button>
     <button class="tab-btn" onclick="switchTab('queue')">⚡ Turn Queue & Debounce</button>
-    <button class="tab-btn" onclick="switchTab('facts')">🧱 Fakten (<span id="tab-cnt-facts">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('episodes')">📖 Episoden (<span id="tab-cnt-episodes">0</span>)</button>
+    <button class="tab-btn" onclick="switchTab('facts')">🧱 Facts (<span id="tab-cnt-facts">0</span>)</button>
+    <button class="tab-btn" onclick="switchTab('episodes')">📖 Episodes (<span id="tab-cnt-episodes">0</span>)</button>
     <button class="tab-btn" onclick="switchTab('learnings')">💡 Learnings (<span id="tab-cnt-learnings">0</span>)</button>
-    <button class="tab-btn" onclick="switchTab('graph')">🕸️ Knowledge Graph (<span id="tab-cnt-graph">0</span>)</button>
+    <button class="tab-btn" onclick="switchTab('graph')">🕸️ Entity Graph (<span id="tab-cnt-graph">0</span>)</button>
     <button class="tab-btn" onclick="switchTab('audit')">📜 Audit Log</button>
   </div>
 
   <!-- TAB 1: Search Sandbox -->
   <div id="tab-search" class="tab-content active">
     <div class="search-box">
-      <input type="text" id="inp-search" placeholder="Suchebegriff eingeben (z.B. Hundeversicherung, Tesla, Beelink, Madrid)..." oninput="debounceSearch()">
+      <input type="text" id="inp-search" placeholder="Enter search query (e.g. dog insurance, Tesla, Beelink, Madrid, retirement)..." oninput="debounceSearch()">
       <div class="search-meta" id="search-latency">0 ms</div>
     </div>
     <div id="search-results">
-      <p style="color:var(--text-muted); text-align:center; padding: 40px;">Tippe einen Begriff ein, um die hybride multilinguale FTS5-Suche in Echtzeit zu testen.</p>
+      <p style="color:var(--text-muted); text-align:center; padding: 40px;">Type a search query to test hybrid multilingual FTS5 retrieval in real time.</p>
     </div>
   </div>
 
@@ -441,17 +442,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="queue-bar-container">
       <div class="queue-bar-header">
         <span><b>Calm-Memory Debounce Status</b></span>
-        <span id="lbl-debounce-text">Keine ausstehenden Turns</span>
+        <span id="lbl-debounce-text">Queue is empty</span>
       </div>
       <div class="progress-track">
         <div class="progress-fill" id="progress-debounce"></div>
       </div>
       <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; color:var(--text-muted);">
-        <span>Debounce-Fenster: 300s (5m Idle) / Max-Timeout: 900s (15m)</span>
-        <button class="btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="forceWorker()">Batch jetzt verarbeiten</button>
+        <span>Debounce window: 300s (5m idle) / Max timeout: 900s (15m)</span>
+        <button class="btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="forceWorker()">Process Batch Now</button>
       </div>
     </div>
-    <h3 style="margin-bottom:15px; font-size:1.1rem; color:var(--text-bright);">Ausstehende Turns in Warteschlange</h3>
+    <h3 style="margin-bottom:15px; font-size:1.1rem; color:var(--text-bright);">Pending Turns in Queue</h3>
     <div id="queue-items"></div>
   </div>
 
@@ -527,16 +528,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const prog = document.getElementById('progress-debounce');
 
       if (!queue || queue.pending_count === 0) {
-        debLbl.innerText = 'Queue ist leer (0 ausstehende Turns)';
+        debLbl.innerText = 'Queue is empty (0 pending turns)';
         prog.style.width = '0%';
-        qCont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine ausstehenden Turns.</p>';
+        qCont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No pending turns.</p>';
         return;
       }
 
       const idleSec = queue.newest_age_seconds || 0;
       const pct = Math.min(100, Math.round((idleSec / 300) * 100));
       prog.style.width = pct + '%';
-      debLbl.innerText = `Letzte Nachricht vor ${idleSec}s (Batch-Trigger bei 300s oder 15m Timeout)`;
+      debLbl.innerText = `Last message ${idleSec}s ago (batch triggers at 300s idle or 15m timeout)`;
 
       qCont.innerHTML = queue.turns.map(t => `
         <div class="item-card">
@@ -547,7 +548,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="item-body"><b>User:</b> ${escapeHtml(t.user_prompt)}</div>
           <div class="item-meta">
             <span><b>Status:</b> ${t.status}</span>
-            <span><b>Chat-ID:</b> ${t.chat_id || '-'}</span>
+            <span><b>Chat ID:</b> ${t.chat_id || '-'}</span>
           </div>
         </div>
       `).join('');
@@ -556,7 +557,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderFacts(facts) {
       const cont = document.getElementById('facts-items');
       if (!facts || facts.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine Fakten vorhanden.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No facts stored.</p>';
         return;
       }
       cont.innerHTML = facts.map(f => `
@@ -568,7 +569,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="item-body">${escapeHtml(f.fact)}</div>
           <div class="item-meta">
             <span><b>Keywords:</b> ${escapeHtml(f.keywords || '-')}</span>
-            <span><b>Aktualisiert:</b> ${f.updated_at}</span>
+            <span><b>Updated:</b> ${f.updated_at}</span>
           </div>
         </div>
       `).join('');
@@ -577,7 +578,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderEpisodes(episodes) {
       const cont = document.getElementById('episodes-items');
       if (!episodes || episodes.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine Episoden vorhanden.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No episodes stored.</p>';
         return;
       }
       cont.innerHTML = episodes.map(e => `
@@ -588,9 +589,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div class="item-body">${escapeHtml(e.narrative)}</div>
           <div class="item-meta">
-            <span><b>Zeitraum:</b> ${e.period || '-'}</span>
+            <span><b>Period:</b> ${e.period || '-'}</span>
             <span><b>Entities:</b> ${escapeHtml(e.entities || '-')}</span>
-            <span><b>Stance / Haltung:</b> ${escapeHtml(e.stance || '-')}</span>
+            <span><b>Stance / Sentiment:</b> ${escapeHtml(e.stance || '-')}</span>
           </div>
         </div>
       `).join('');
@@ -599,7 +600,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderLearnings(learnings) {
       const cont = document.getElementById('learnings-items');
       if (!learnings || learnings.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine Learnings vorhanden.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No learnings stored.</p>';
         return;
       }
       cont.innerHTML = learnings.map(l => `
@@ -610,7 +611,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div class="item-body">💡 ${escapeHtml(l.insight)}</div>
           <div class="item-meta">
-            <span><b>Kontext:</b> ${escapeHtml(l.context || '-')}</span>
+            <span><b>Context:</b> ${escapeHtml(l.context || '-')}</span>
             <span><b>Keywords:</b> ${escapeHtml(l.keywords || '-')}</span>
           </div>
         </div>
@@ -620,7 +621,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderGraph(links) {
       const cont = document.getElementById('graph-items');
       if (!links || links.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine Relationen vorhanden.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No entity relationships stored.</p>';
         return;
       }
       cont.innerHTML = links.map(l => `
@@ -638,7 +639,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderAudit(audit) {
       const cont = document.getElementById('audit-items');
       if (!audit || audit.length === 0) {
-        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">Keine Konsolidierungs-Logs vorhanden.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:20px; text-align:center;">No consolidation logs recorded.</p>';
         return;
       }
       cont.innerHTML = audit.map(a => `
@@ -647,10 +648,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <span class="item-id">${a.action.toUpperCase()}: ${a.target_id}</span>
             <span class="pill category">${a.category}</span>
           </div>
-          <div class="item-body"><b>Änderung:</b> ${escapeHtml(a.diff_summary)}</div>
+          <div class="item-body"><b>Change:</b> ${escapeHtml(a.diff_summary)}</div>
           <div class="item-meta">
-            <span><b>Begründung:</b> ${escapeHtml(a.rationale)}</span>
-            <span><b>Zeitpunkt:</b> ${a.timestamp}</span>
+            <span><b>Rationale:</b> ${escapeHtml(a.rationale)}</span>
+            <span><b>Timestamp:</b> ${a.timestamp}</span>
           </div>
         </div>
       `).join('');
@@ -666,7 +667,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const cont = document.getElementById('search-results');
       const latLbl = document.getElementById('search-latency');
       if (!q) {
-        cont.innerHTML = '<p style="color:var(--text-muted); text-align:center; padding: 40px;">Tippe einen Begriff ein, um die Suche zu testen.</p>';
+        cont.innerHTML = '<p style="color:var(--text-muted); text-align:center; padding: 40px;">Type a search query to test hybrid retrieval.</p>';
         latLbl.innerText = '0 ms';
         return;
       }
@@ -680,7 +681,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         let html = '';
         if (data.facts && data.facts.length > 0) {
-          html += '<h4 style="color:var(--accent); margin:15px 0 10px;">🧱 Treffer in Fakten</h4>' + data.facts.map(f => `
+          html += '<h4 style="color:var(--accent); margin:15px 0 10px;">🧱 Matches in Facts</h4>' + data.facts.map(f => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${f.id}</span><span class="pill category">${f.category}</span></div>
               <div class="item-body">${escapeHtml(f.fact)}</div>
@@ -688,7 +689,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           `).join('');
         }
         if (data.episodes && data.episodes.length > 0) {
-          html += '<h4 style="color:var(--purple); margin:15px 0 10px;">📖 Treffer in Episoden</h4>' + data.episodes.map(e => `
+          html += '<h4 style="color:var(--purple); margin:15px 0 10px;">📖 Matches in Episodes</h4>' + data.episodes.map(e => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${e.title}</span><span class="pill ${e.status}">${e.status}</span></div>
               <div class="item-body">${escapeHtml(e.narrative)}</div>
@@ -696,7 +697,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           `).join('');
         }
         if (data.learnings && data.learnings.length > 0) {
-          html += '<h4 style="color:var(--cyan); margin:15px 0 10px;">💡 Treffer in Learnings</h4>' + data.learnings.map(l => `
+          html += '<h4 style="color:var(--cyan); margin:15px 0 10px;">💡 Matches in Learnings</h4>' + data.learnings.map(l => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${l.id}</span><span class="pill category">${l.category}</span></div>
               <div class="item-body">${escapeHtml(l.insight)}</div>
@@ -705,23 +706,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         }
 
         if (!html) {
-          html = '<p style="color:var(--text-muted); text-align:center; padding: 30px;">Keine Treffer für "' + escapeHtml(q) + '"</p>';
+          html = '<p style="color:var(--text-muted); text-align:center; padding: 30px;">No matches found for "' + escapeHtml(q) + '"</p>';
         }
         cont.innerHTML = html;
       } catch (e) {
-        cont.innerHTML = '<p style="color:var(--danger); text-align:center; padding: 20px;">Fehler bei der Suche</p>';
+        cont.innerHTML = '<p style="color:var(--danger); text-align:center; padding: 20px;">Search request failed</p>';
       }
     }
 
     async function forceWorker() {
-      if (!confirm('Turn-Warteschlange jetzt sofort ohne Debounce-Wartezeit verarbeiten?')) return;
+      if (!confirm('Process pending conversation queue immediately without waiting for debounce timeout?')) return;
       try {
         const res = await fetch('/api/force-worker', { method: 'POST' });
         const data = await res.json();
-        alert(data.message || 'Worker ausgeführt!');
+        alert(data.message || 'Worker finished successfully!');
         fetchData();
       } catch (e) {
-        alert('Fehler beim Ausführen: ' + e);
+        alert('Worker execution error: ' + e);
       }
     }
 
@@ -806,7 +807,7 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
             try:
                 worker_bin = BASE_DIR / "memory_worker.py"
                 res = subprocess.run([sys.executable, str(worker_bin), "--force"], capture_output=True, text=True, timeout=60)
-                self._send_json({"status": "ok", "message": res.stdout.strip() or "Queue erfolgreich verarbeitet."})
+                self._send_json({"status": "ok", "message": res.stdout.strip() or "Queue processed successfully."})
             except Exception as e:
                 self._send_json({"status": "error", "message": str(e)}, status=500)
             return
