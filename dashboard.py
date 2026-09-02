@@ -73,6 +73,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       color: var(--text);
       line-height: 1.5;
       padding: 20px;
+      max-width: 1400px;
+      margin: 0 auto;
     }
     header {
       display: flex;
@@ -80,7 +82,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       align-items: center;
       flex-wrap: wrap;
       gap: 15px;
-      padding-bottom: 20px;
+      padding-bottom: 18px;
       border-bottom: 1px solid var(--card-border);
       margin-bottom: 20px;
     }
@@ -90,25 +92,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       gap: 12px;
     }
     .header-title h1 {
-      font-size: 1.4rem;
+      font-size: 1.35rem;
       color: var(--text-bright);
       font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .pulse-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 10px;
-      background: rgba(63, 185, 80, 0.15);
-      border: 1px solid rgba(63, 185, 80, 0.4);
+      padding: 3px 9px;
+      background: rgba(63, 185, 80, 0.12);
+      border: 1px solid rgba(63, 185, 80, 0.35);
       color: var(--success);
       font-size: 0.75rem;
       border-radius: 20px;
       font-weight: 500;
     }
     .pulse-dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       background: var(--success);
       border-radius: 50%;
       box-shadow: 0 0 8px var(--success);
@@ -136,73 +141,76 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     .badge b { color: var(--accent); }
 
-    /* Interactive Top Stats Grid (Primary Navigation) */
+    /* Clean 5-Metric Primary Navigation Bar */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 15px;
-      margin-bottom: 25px;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 900px) {
+      .stats-grid {
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      }
     }
     .stat-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 8px;
-      padding: 14px;
+      padding: 12px 14px;
       position: relative;
-      overflow: hidden;
       cursor: pointer;
       user-select: none;
-      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+      transition: all 0.15s ease;
+      text-align: left;
     }
     .stat-card:hover {
-      border-color: #58a6ff88;
+      border-color: #58a6ff99;
       transform: translateY(-2px);
     }
     .stat-card.active {
       border-color: var(--accent);
       background: rgba(88, 166, 255, 0.08);
-      box-shadow: 0 0 14px var(--accent-glow);
+      box-shadow: 0 0 12px var(--accent-glow);
     }
     .stat-card::before {
       content: '';
       position: absolute;
       top: 0; left: 0; right: 0; height: 3px;
-      background: var(--accent);
+      background: var(--card-border);
+      border-radius: 8px 8px 0 0;
     }
-    .stat-card.c-search::before { background: var(--accent); }
-    .stat-card.c-queue::before { background: var(--warning); }
     .stat-card.c-facts::before { background: #58a6ff; }
     .stat-card.c-episodes::before { background: var(--purple); }
     .stat-card.c-learnings::before { background: var(--cyan); }
     .stat-card.c-links::before { background: var(--success); }
+    .stat-card.c-queue::before { background: var(--warning); }
 
     .stat-label {
       font-size: 0.75rem;
       color: var(--text-muted);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
+      letter-spacing: 0.6px;
+      font-weight: 600;
+      white-space: nowrap;
     }
     .stat-val {
-      font-size: 1.6rem;
+      font-size: 1.7rem;
       font-weight: 700;
       color: var(--text-bright);
+      line-height: 1.2;
+      margin: 3px 0 2px;
     }
-    .stat-sub {
+    .stat-layer {
       font-size: 0.75rem;
       color: var(--text-muted);
-      margin-top: 4px;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-
-    /* Search Sandbox */
+    /* Prominent Search Bar */
     .search-box {
       display: flex;
+      align-items: center;
       gap: 10px;
       margin-bottom: 20px;
       background: var(--card-bg);
@@ -213,14 +221,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     .search-box:focus-within {
       border-color: var(--accent);
-      box-shadow: 0 0 10px var(--accent-glow);
+      box-shadow: 0 0 12px var(--accent-glow);
     }
     .search-box input {
       flex: 1;
       background: none;
       border: none;
       color: var(--text-bright);
-      font-size: 1.05rem;
+      font-size: 1rem;
       outline: none;
     }
     .search-meta {
@@ -230,6 +238,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       color: var(--text-muted);
       font-family: monospace;
     }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
 
     /* Cards & Lists */
     .item-card {
@@ -390,52 +401,67 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </header>
 
-  <!-- Interactive Primary Navigation (6 Connected Stat Cards) -->
+  <!-- 5-Card Navigation Bar -->
   <div class="stats-grid">
-    <div class="stat-card c-search active" id="card-search" onclick="switchTab('search')">
-      <div class="stat-label">Search Sandbox</div>
-      <div class="stat-val" style="font-size: 1.45rem;">🔍 Live FTS5</div>
-      <div class="stat-sub">Multilingual Hybrid Query</div>
+    <div class="stat-card c-facts active" id="card-facts" onclick="switchTab('facts')">
+      <div class="stat-label">Facts</div>
+      <div class="stat-val" id="cnt-facts">0</div>
+      <div class="stat-layer">Layer 1 • Master Data</div>
+    </div>
+    <div class="stat-card c-episodes" id="card-episodes" onclick="switchTab('episodes')">
+      <div class="stat-label">Episodes</div>
+      <div class="stat-val" id="cnt-episodes">0</div>
+      <div class="stat-layer">Layer 2 • Topics</div>
+    </div>
+    <div class="stat-card c-learnings" id="card-learnings" onclick="switchTab('learnings')">
+      <div class="stat-label">Learnings</div>
+      <div class="stat-val" id="cnt-learnings">0</div>
+      <div class="stat-layer">Layer 3 • Heuristics</div>
+    </div>
+    <div class="stat-card c-links" id="card-graph" onclick="switchTab('graph')">
+      <div class="stat-label">Relations</div>
+      <div class="stat-val" id="cnt-links">0</div>
+      <div class="stat-layer">Layer 4 • Entity Graph</div>
     </div>
     <div class="stat-card c-queue" id="card-queue" onclick="switchTab('queue')">
       <div class="stat-label">Turn Queue</div>
       <div class="stat-val" id="cnt-queue">0</div>
-      <div class="stat-sub" id="lbl-queue-sub">0 pending (idle)</div>
-    </div>
-    <div class="stat-card c-facts" id="card-facts" onclick="switchTab('facts')">
-      <div class="stat-label">Layer 1: Facts</div>
-      <div class="stat-val" id="cnt-facts">0</div>
-      <div class="stat-sub">Atomic Master Data & Specs</div>
-    </div>
-    <div class="stat-card c-episodes" id="card-episodes" onclick="switchTab('episodes')">
-      <div class="stat-label">Layer 2: Episodes</div>
-      <div class="stat-val" id="cnt-episodes">0</div>
-      <div class="stat-sub">Narratives & Topic Dossiers</div>
-    </div>
-    <div class="stat-card c-learnings" id="card-learnings" onclick="switchTab('learnings')">
-      <div class="stat-label">Layer 3: Learnings</div>
-      <div class="stat-val" id="cnt-learnings">0</div>
-      <div class="stat-sub">Heuristics & Rules of Thumb</div>
-    </div>
-    <div class="stat-card c-links" id="card-graph" onclick="switchTab('graph')">
-      <div class="stat-label">Layer 4: Relations</div>
-      <div class="stat-val" id="cnt-links">0</div>
-      <div class="stat-sub">Entity Knowledge Graph</div>
+      <div class="stat-layer" id="lbl-queue-sub">0 pending (idle)</div>
     </div>
   </div>
 
-  <!-- TAB 1: Search Sandbox -->
-  <div id="tab-search" class="tab-content active">
-    <div class="search-box">
-      <input type="text" id="inp-search" placeholder="Enter search query (e.g. dog insurance, Tesla, Beelink, Madrid, retirement)..." oninput="debounceSearch()">
-      <div class="search-meta" id="search-latency">0 ms</div>
-    </div>
-    <div id="search-results">
-      <p style="color:var(--text-muted); text-align:center; padding: 40px;">Type a search query to test hybrid multilingual FTS5 retrieval in real time.</p>
-    </div>
+  <!-- Dedicated Live Search Bar -->
+  <div class="search-box">
+    <span style="color:var(--text-muted);">🔍</span>
+    <input type="text" id="inp-search" placeholder="Type to search across all memory layers (e.g. dog insurance, Tesla, Beelink, Madrid, retirement)..." oninput="debounceSearch()">
+    <button id="btn-clear-search" onclick="clearSearch()" style="display:none; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:1.1rem; padding:0 6px;">✕</button>
+    <div class="search-meta" id="search-latency">0 ms</div>
   </div>
 
-  <!-- TAB 2: Queue Monitor -->
+  <!-- Live Search Results Container -->
+  <div id="search-results" style="display:none; margin-bottom: 25px;"></div>
+
+  <!-- TAB 1: Facts (Default Active) -->
+  <div id="tab-facts" class="tab-content active">
+    <div id="facts-items"></div>
+  </div>
+
+  <!-- TAB 2: Episodes -->
+  <div id="tab-episodes" class="tab-content">
+    <div id="episodes-items"></div>
+  </div>
+
+  <!-- TAB 3: Learnings -->
+  <div id="tab-learnings" class="tab-content">
+    <div id="learnings-items"></div>
+  </div>
+
+  <!-- TAB 4: Relations -->
+  <div id="tab-graph" class="tab-content">
+    <div class="graph-grid" id="graph-items"></div>
+  </div>
+
+  <!-- TAB 5: Queue Monitor -->
   <div id="tab-queue" class="tab-content">
     <div class="queue-bar-container">
       <div class="queue-bar-header">
@@ -464,27 +490,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="queue-items"></div>
   </div>
 
-  <!-- TAB 3: Facts -->
-  <div id="tab-facts" class="tab-content">
-    <div id="facts-items"></div>
-  </div>
-
-  <!-- TAB 4: Episodes -->
-  <div id="tab-episodes" class="tab-content">
-    <div id="episodes-items"></div>
-  </div>
-
-  <!-- TAB 5: Learnings -->
-  <div id="tab-learnings" class="tab-content">
-    <div id="learnings-items"></div>
-  </div>
-
-  <!-- TAB 6: Graph -->
-  <div id="tab-graph" class="tab-content">
-    <div class="graph-grid" id="graph-items"></div>
-  </div>
-
-  <!-- TAB 7: Audit Log -->
+  <!-- TAB 6: Audit Log -->
   <div id="tab-audit" class="tab-content">
     <h3 style="font-size:1.1rem; color:var(--text-bright); margin-bottom:15px;">Consolidation & Deduplication Audit Log</h3>
     <div id="audit-items"></div>
@@ -495,6 +501,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let searchTimer = null;
     const openTurnDetails = new Set();
     let currentQueueFilter = 'all';
+    let currentActiveTab = 'facts';
 
     // State caches to avoid unnecessary DOM re-creation
     let lastRenderedQueueHash = '';
@@ -505,18 +512,30 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let lastRenderedAuditHash = '';
 
     function switchTab(name) {
+      currentActiveTab = name;
       document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
       const activeCard = document.getElementById('card-' + name);
       if (activeCard) activeCard.classList.add('active');
 
+      // Clear search when explicitly selecting a layer card
+      const inp = document.getElementById('inp-search');
+      if (inp) inp.value = '';
+      document.getElementById('btn-clear-search').style.display = 'none';
+      document.getElementById('search-latency').innerText = '0 ms';
+      document.getElementById('search-results').style.display = 'none';
+
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       const targetTab = document.getElementById('tab-' + name);
       if (targetTab) targetTab.classList.add('active');
+    }
 
-      if (name === 'search') {
-        const inp = document.getElementById('inp-search');
-        if (inp) setTimeout(() => inp.focus(), 50);
-      }
+    function clearSearch() {
+      const inp = document.getElementById('inp-search');
+      if (inp) inp.value = '';
+      document.getElementById('btn-clear-search').style.display = 'none';
+      document.getElementById('search-latency').innerText = '0 ms';
+      document.getElementById('search-results').style.display = 'none';
+      switchTab(currentActiveTab);
     }
 
     function onTurnDetailToggle(turnId, isOpen) {
@@ -780,11 +799,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const q = document.getElementById('inp-search').value.trim();
       const cont = document.getElementById('search-results');
       const latLbl = document.getElementById('search-latency');
+      const clearBtn = document.getElementById('btn-clear-search');
+
       if (!q) {
-        cont.innerHTML = '<p style="color:var(--text-muted); text-align:center; padding: 40px;">Type a search query to test hybrid retrieval.</p>';
+        clearBtn.style.display = 'none';
+        cont.style.display = 'none';
         latLbl.innerText = '0 ms';
+        // Restore active tab
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        const target = document.getElementById('tab-' + currentActiveTab);
+        if (target) target.classList.add('active');
+        const activeCard = document.getElementById('card-' + currentActiveTab);
+        if (activeCard) activeCard.classList.add('active');
         return;
       }
+
+      clearBtn.style.display = 'block';
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
+      cont.style.display = 'block';
 
       const t0 = performance.now();
       try {
@@ -795,7 +828,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         let html = '';
         if (data.facts && data.facts.length > 0) {
-          html += '<h4 style="color:var(--accent); margin:15px 0 10px;">🧱 Matches in Facts</h4>' + data.facts.map(f => `
+          html += '<h4 style="color:var(--accent); margin:15px 0 10px;">🧱 Matches in Facts (' + data.facts.length + ')</h4>' + data.facts.map(f => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${f.id}</span><span class="pill category">${f.category}</span></div>
               <div class="item-body">${escapeHtml(f.fact)}</div>
@@ -803,7 +836,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           `).join('');
         }
         if (data.episodes && data.episodes.length > 0) {
-          html += '<h4 style="color:var(--purple); margin:15px 0 10px;">📖 Matches in Episodes</h4>' + data.episodes.map(e => `
+          html += '<h4 style="color:var(--purple); margin:15px 0 10px;">📖 Matches in Episodes (' + data.episodes.length + ')</h4>' + data.episodes.map(e => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${e.title}</span><span class="pill ${e.status}">${e.status}</span></div>
               <div class="item-body">${escapeHtml(e.narrative)}</div>
@@ -811,7 +844,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           `).join('');
         }
         if (data.learnings && data.learnings.length > 0) {
-          html += '<h4 style="color:var(--cyan); margin:15px 0 10px;">💡 Matches in Learnings</h4>' + data.learnings.map(l => `
+          html += '<h4 style="color:var(--cyan); margin:15px 0 10px;">💡 Matches in Learnings (' + data.learnings.length + ')</h4>' + data.learnings.map(l => `
             <div class="item-card">
               <div class="item-header"><span class="item-id">${l.id}</span><span class="pill category">${l.category}</span></div>
               <div class="item-body">${escapeHtml(l.insight)}</div>
@@ -820,7 +853,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         }
 
         if (!html) {
-          html = '<p style="color:var(--text-muted); text-align:center; padding: 30px;">No matches found for "' + escapeHtml(q) + '"</p>';
+          html = '<p style="color:var(--text-muted); text-align:center; padding: 40px;">No matches found for "' + escapeHtml(q) + '"</p>';
         }
         cont.innerHTML = html;
       } catch (e) {
