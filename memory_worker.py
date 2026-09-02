@@ -42,6 +42,8 @@ def send_telegram_notification(message: str, chat_id: str = None) -> bool:
             cmd = ["python3", str(SEND_TELEGRAM_BIN)]
             if chat_id:
                 cmd.extend(["--chat-id", str(chat_id)])
+            else:
+                cmd.append("--reports")
             cmd.append(message)
             res = subprocess.run(
                 cmd,
@@ -55,38 +57,46 @@ def send_telegram_notification(message: str, chat_id: str = None) -> bool:
 
 
 def format_notification(changes: dict) -> str:
-    """Format extracted memory changes into a concise Telegram notification."""
-    lines = ["🧠 *[Autonomes Gedächtnis aktualisiert]*\n"]
-    
-    # Facts
+    """Format extracted memory changes into an ultra-compact Telegram notification with descriptive texts."""
     facts = changes.get("facts", [])
-    for f in facts:
-        action = "Aktualisierter Fakt" if f.get("is_update") else "Neuer Fakt"
-        fact_text = f.get("fact", "")
-        short_fact = (fact_text[:80] + "...") if len(fact_text) > 80 else fact_text
-        lines.append(f"• *{action}:* `{f.get('id')}`\n  _{short_fact}_")
-
-    # Episodes
     episodes = changes.get("episodes", [])
-    for ep in episodes:
-        action = "Episode aktualisiert" if ep.get("is_update") else "Neue Episode"
-        lines.append(f"• *{action}:* `{ep.get('id')}` ({ep.get('title', '')})")
-
-    # Learnings
     learnings = changes.get("learnings", [])
-    for lr in learnings:
-        action = "Learning aktualisiert" if lr.get("is_update") else "Neues Learning"
-        insight_text = lr.get("insight", "")
-        short_insight = (insight_text[:80] + "...") if len(insight_text) > 80 else insight_text
-        lines.append(f"• *{action}:* `{lr.get('id')}`\n  _{short_insight}_")
-
-    # Entity Links
     links = changes.get("entity_links", [])
-    for el in links:
-        lines.append(f"• *Entity-Link:* `{el.get('source')}` ➔ `[{el.get('relation')}]` ➔ `{el.get('target')}`")
 
-    lines.append("\n_Automatisch im Hintergrund gelernt und in memory.db gesichert._")
-    return "\n".join(lines)
+    total_count = len(facts) + len(episodes) + len(learnings) + len(links)
+    if total_count == 0:
+        return ""
+
+    counts_summary = []
+    if facts: counts_summary.append(f"{len(facts)} Fakt{'en' if len(facts) > 1 else ''}")
+    if episodes: counts_summary.append(f"{len(episodes)} Episode{'n' if len(episodes) > 1 else ''}")
+    if learnings: counts_summary.append(f"{len(learnings)} Learning{'s' if len(learnings) > 1 else ''}")
+    if links: counts_summary.append(f"{len(links)} Link{'s' if len(links) > 1 else ''}")
+
+    lines = [f"🧠 *Autonomes Gedächtnis aktualisiert* (`{', '.join(counts_summary)}`)"]
+
+    items = []
+    for f in facts:
+        icon = "🔄" if f.get("is_update") else "➕"
+        text = f.get("fact", "").replace("\n", " ").strip()
+        short_text = (text[:80] + "…") if len(text) > 80 else text
+        items.append(f"{icon} {short_text}")
+
+    for ep in episodes:
+        icon = "🔄" if ep.get("is_update") else "➕"
+        title = ep.get("title", "").strip() or ep.get("id")
+        items.append(f"{icon} {title}")
+
+    for lr in learnings:
+        icon = "🔄" if lr.get("is_update") else "➕"
+        text = lr.get("insight", "").replace("\n", " ").strip()
+        short_text = (text[:80] + "…") if len(text) > 80 else text
+        items.append(f"{icon} {short_text}")
+
+    if items:
+        lines.append("• " + "\n• ".join(items))
+
+    return "\n\n".join(lines).strip()
 
 
 def should_process_queue(force: bool = False) -> tuple[bool, str]:

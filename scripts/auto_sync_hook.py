@@ -104,13 +104,31 @@ def main():
     if any(m in last_user_prompt for m in internal_markers):
         return
 
+    # Resolve chat_id if originated from Telegram
+    conv_id = payload.get("conversationId")
+    chat_id = os.environ.get("AGY_TELEGRAM_CHAT_ID")
+    if not chat_id and conv_id:
+        state_file = Path.home() / ".local" / "state" / "agy-telegram" / "state.json"
+        if state_file.exists():
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    state_data = json.load(f)
+                for session_chat_id, session in state_data.get("sessions", {}).items():
+                    if session.get("conversationId") == conv_id:
+                        chat_id = str(session_chat_id)
+                        break
+            except Exception:
+                pass
+
+    source = "telegram" if chat_id else "hook"
+
     # 1. Enqueue turn in local SQLite queue (< 1ms)
     if enqueue_turn:
         enqueue_turn(
             user_prompt=last_user_prompt[:4000],
             assistant_response=last_model_response[:4000] if last_model_response else "Action executed successfully.",
-            source="hook",
-            chat_id=None
+            source=source,
+            chat_id=chat_id
         )
 
 

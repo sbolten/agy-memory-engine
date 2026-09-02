@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 import os
 import tempfile
 import sqlite3
@@ -75,10 +76,28 @@ class TestWorkerNotification(unittest.TestCase):
         }
         msg = format_notification(changes)
         self.assertIn("Autonomes Gedächtnis aktualisiert", msg)
-        self.assertIn("user.test.dog", msg)
-        self.assertIn("travel.foehr_2026", msg)
-        self.assertIn("finance.investing", msg)
-        self.assertIn("infra.beelink", msg)
+        self.assertIn("Golden Retriever 4 Jahre", msg)
+        self.assertIn("Föhr Urlaub", msg)
+    @unittest.mock.patch("subprocess.run")
+    def test_send_telegram_notification(self, mock_run):
+        from memory_worker import send_telegram_notification
+        mock_run.return_value.returncode = 0
+
+        # When chat_id is None, should route to --reports
+        send_telegram_notification("Test Message", chat_id=None)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--reports", cmd)
+        self.assertIn("Test Message", cmd)
+
+        # When chat_id is provided, should route to --chat-id
+        mock_run.reset_mock()
+        send_telegram_notification("Test Message 2", chat_id="12345")
+        mock_run.assert_called_once()
+        cmd2 = mock_run.call_args[0][0]
+        self.assertIn("--chat-id", cmd2)
+        self.assertIn("12345", cmd2)
+        self.assertNotIn("--reports", cmd2)
 
 
 if __name__ == "__main__":
