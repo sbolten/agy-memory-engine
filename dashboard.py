@@ -502,9 +502,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         document.getElementById('lbl-db-size').innerText = data.db_size || '-';
         document.getElementById('cnt-facts').innerText = data.counts.facts || 0;
         document.getElementById('cnt-episodes').innerText = data.counts.episodes || 0;
-        document.getElementById('cnt-learnings').innerText = data.counts.learnings || 0;
-        document.getElementById('cnt-links').innerText = data.counts.links || 0;
-        document.getElementById('cnt-queue').innerText = data.counts.queue_pending || 0;
+        const qCnt = data.counts.queue_pending || 0;
+        document.getElementById('cnt-queue').innerText = qCnt;
+        document.getElementById('lbl-queue-sub').innerText = qCnt === 0 ? '0 pending (idle)' : `${qCnt} waiting for debounce`;
 
         document.getElementById('tab-cnt-facts').innerText = data.counts.facts || 0;
         document.getElementById('tab-cnt-episodes').innerText = data.counts.episodes || 0;
