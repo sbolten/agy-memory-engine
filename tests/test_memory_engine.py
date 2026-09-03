@@ -728,6 +728,28 @@ class TestDashboardEndpoints(unittest.TestCase):
             os.remove(test_file)
 
 
+    def test_prune_orphan_links(self):
+        import agy_memory
+        # Setup valid entities
+        agy_memory.upsert_fact("fact.node_a", "infra", "Fact A")
+        agy_memory.upsert_fact("fact.node_b", "infra", "Fact B")
+        # Setup links: one valid, one half-orphan, one double-orphan
+        with schema.db_session(TEST_DB) as conn:
+            conn.execute("INSERT OR REPLACE INTO entity_links VALUES ('fact.node_a', 'fact.node_b', 'connects_to')")
+            conn.execute("INSERT OR REPLACE INTO entity_links VALUES ('fact.node_a', 'ghost.node_c', 'connects_to')")
+            conn.execute("INSERT OR REPLACE INTO entity_links VALUES ('ghost.node_d', 'fact.node_b', 'connects_to')")
+            conn.execute("INSERT OR REPLACE INTO entity_links VALUES ('ghost.node_x', 'ghost.node_y', 'connects_to')")
+            conn.commit()
+
+        pruned = agy_memory.prune_orphan_links(dry_run=False)
+        self.assertEqual(pruned, 3)
+
+        with schema.db_session(TEST_DB) as conn:
+            remaining = conn.execute("SELECT source_id, target_id FROM entity_links").fetchall()
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0], ("fact.node_a", "fact.node_b"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

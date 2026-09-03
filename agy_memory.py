@@ -1201,7 +1201,7 @@ def prune_orphan_links(dry_run: bool = False) -> int:
         all_links = cursor.fetchall()
         orphans = []
         for src, tgt, rel in all_links:
-            if src not in known_ids and tgt not in known_ids:
+            if src not in known_ids or tgt not in known_ids:
                 orphans.append((src, tgt, rel))
 
         if orphans and not dry_run:
