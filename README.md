@@ -193,8 +193,8 @@ AGY_TURN_QUEUE_DB=~/.gemini/turn_queue.db
 AGY_MEMORY_INACTIVITY_SECONDS=300   # 5 minutes idle threshold
 AGY_MEMORY_MAX_WAIT_SECONDS=900     # 15 minutes max timeout
 
-# Telegram Notification Recipient
-AGY_MEMORY_TELEGRAM_CHAT_ID=299090858
+# Telegram Notification Recipient (optional: your numeric Telegram user or group ID)
+AGY_MEMORY_TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 
 # Path to Antigravity CLI binary
 AGY_BIN=agy

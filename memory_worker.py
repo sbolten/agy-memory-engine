@@ -30,7 +30,6 @@ from agy_memory import is_trivial_prompt, sync_turn
 from config import (
     INACTIVITY_THRESHOLD_SECONDS,
     MAX_WAIT_THRESHOLD_SECONDS,
-    DEFAULT_TELEGRAM_CHAT_ID,
     SEND_TELEGRAM_BIN
 )
 

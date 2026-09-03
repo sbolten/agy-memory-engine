@@ -64,7 +64,7 @@ INACTIVITY_THRESHOLD_SECONDS = int(get_config("AGY_MEMORY_INACTIVITY_SECONDS", "
 MAX_WAIT_THRESHOLD_SECONDS = int(get_config("AGY_MEMORY_MAX_WAIT_SECONDS", "900"))
 
 # --- Telegram Notifications ---
-DEFAULT_TELEGRAM_CHAT_ID = get_config("AGY_MEMORY_TELEGRAM_CHAT_ID", "299090858")
+DEFAULT_TELEGRAM_CHAT_ID = get_config("AGY_MEMORY_TELEGRAM_CHAT_ID", "")
 SEND_TELEGRAM_BIN = Path.home() / "bin" / "send_telegram.py"
 
 # --- Real-Time Debug Dashboard ---

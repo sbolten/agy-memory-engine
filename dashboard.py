@@ -25,8 +25,7 @@ from config import (
     DASHBOARD_PORT,
     DASHBOARD_HOST,
     INACTIVITY_THRESHOLD_SECONDS,
-    MAX_WAIT_THRESHOLD_SECONDS,
-    DEFAULT_TELEGRAM_CHAT_ID
+    MAX_WAIT_THRESHOLD_SECONDS
 )
 from schema import db_session
 from agy_memory import (
