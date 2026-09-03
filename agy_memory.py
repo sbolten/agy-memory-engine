@@ -29,7 +29,34 @@ from config import (
     AGY_BIN
 )
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
+
+# Canonical taxonomies — single source of truth for extraction prompt AND runtime validation
+CANONICAL_FACT_CATEGORIES = frozenset({
+    "infra", "hardware", "software", "contacts", "family", "health", "fitness",
+    "finance", "insurance", "travel", "home", "media", "music", "work", "dev",
+    "preferences", "communication", "cloud", "security", "general"
+})
+
+CANONICAL_LEARNING_CATEGORIES = frozenset({
+    "workflow", "communication", "finance", "health", "shopping", "travel",
+    "hardware", "safety", "architecture", "security", "automation", "general"
+})
+
+CANONICAL_EPISODE_TOPICS = frozenset({
+    "family", "health", "travel", "finance", "home", "dev", "infra",
+    "insurance", "music", "work", "realestate", "trading", "general"
+})
+
+CANONICAL_RELATIONS = frozenset({
+    "hosted_on", "runs_on", "depends_on", "part_of", "member_of",
+    "owned_by", "managed_by", "monitors", "treats", "prescribed_for",
+    "insured_by", "finances", "communicates_via", "located_at", "uses",
+    "stores", "connects_to", "related_to", "maintains", "created_by",
+    "delivers_to", "advises", "works_at", "lives_at", "travels_to",
+    "subscribed_to"
+})
+
 
 STOPWORDS = {
     # German (de)
@@ -528,6 +555,35 @@ def prefetch(query: str, limit_facts: int = 3, limit_episodes: int = 2, limit_le
                 for lc in linked_context:
                     print(f"• {lc}")
 
+# Common LLM-generated category variants → canonical mapping
+_CATEGORY_ALIASES = {
+    "contact": "contacts", "kontakte": "contacts",
+    "infrastructure": "infra", "system_architecture": "infra", "system_config": "infra",
+    "admin": "infra", "config": "infra",
+    "pref": "preferences", "user": "preferences",
+    "pension": "finance", "trading": "finance", "stweg": "home",
+    "gear": "hardware", "tesla": "hardware",
+    "devsecops": "dev", "dev.cron": "automation",
+    "heuristics": "general", "ai_tools": "software", "ai": "dev",
+    "ui_ux": "architecture", "network": "infra",
+    "realestate": "home", "calendar": "general",
+}
+
+
+def _normalize_category(category: str, allowed: frozenset) -> str:
+    """Normalize a category string to the closest canonical category."""
+    if not category:
+        return "general"
+    cat = category.strip().lower()
+    if cat in allowed:
+        return cat
+    if cat in _CATEGORY_ALIASES:
+        alias = _CATEGORY_ALIASES[cat]
+        if alias in allowed:
+            return alias
+    return "general"
+
+
 def upsert_fact(fact_id: str, category: str, fact: str, keywords: str = ""):
     """Insert or update an atomic fact in the memories table."""
     with db_session() as conn:
@@ -702,28 +758,59 @@ def _sync_turn_inner(user_prompt: str, assistant_response: str, dry_run: bool = 
     inv_context = json.dumps(inv, ensure_ascii=False, indent=2)
 
     prompt = f"""You are the Multi-Layer Cognitive Memory Engine for Stephan Bolten.
-Analyze the conversation turn below and extract any persistent information across distinct layers and relations:
+Analyze the conversation turn below and extract ONLY genuinely persistent, reusable information.
 
-1. ATOMIC FACTS ("facts"): Hard facts, IP addresses, specs, master data, device IDs, account names, medications, configuration parameters, definite dates.
-2. NARRATIVE CHRONICLES & EPISODES ("episodes"): Background histories, disputes, social/relationship dynamics, sentiment/stances towards people/topics, multi-event story arcs, context over time.
+## Layer Definitions
+
+1. ATOMIC FACTS ("facts"): Hard facts, IPs, specs, master data, device IDs, account names, medications, config parameters, definite dates/appointments, contact details.
+   ALLOWED CATEGORIES: infra, hardware, software, contacts, family, health, fitness, finance, insurance, travel, home, media, music, work, dev, preferences, communication, cloud, security, general
+
+2. NARRATIVE CHRONICLES & EPISODES ("episodes"): Background histories, disputes, social/relationship dynamics, sentiment/stances, multi-event story arcs.
    - Status: "active" (ongoing), "cooling" (cooling down), "historic" (concluded past), "resolved" (fixed/completed).
-3. EXPERIENTIAL LEARNINGS ("learnings"): Practical insights, rules of thumb, lessons learned from past actions, subjective opinions or tested heuristics.
-4. ENTITY LINKS ("entity_links"): Relationships between entities, hardware, services, people, or topics (e.g. source: "infra.beelink", target: "service.immich", relation: "hosts").
+   ALLOWED TOPICS: family, health, travel, finance, home, dev, infra, insurance, music, work, realestate, trading, general
 
-Existing Database Keys & Topics:
+3. EXPERIENTIAL LEARNINGS ("learnings"): ONLY personal heuristics, behavioral insights, and reusable rules of thumb that will help in FUTURE similar situations.
+   ALLOWED CATEGORIES: workflow, communication, finance, health, shopping, travel, hardware, safety, architecture, security, automation, general
+
+   ✅ GOOD learnings (store these):
+   - "Karin prefers bullet-point summaries for financial topics" (personal communication insight)
+   - "E-Mails an Dr. Bär müssen extrem kurz sein" (reusable behavioral rule)
+   - "PK-Einkäufe nicht ins Depot, sondern liquide halten" (financial heuristic)
+   - "Garmin shows 'Detraining' even with daily exercise if no GPS activity is recorded" (reusable device knowledge)
+   - "When self-restarting a systemd service from within, always decouple via sleep+nohup" (reusable ops pattern)
+
+   🚫 DO NOT store as learnings:
+   - One-time bug fixes or debugging sessions ("Fixed SQLite UTC conversion in dashboard.py")
+   - Implementation details of a specific codebase ("Baileys emits protocolMessages during sync")
+   - Version-specific migration notes ("mcp 2.x breaks FastMCP imports")
+   - Configuration changes made once ("Set model to gemini-3.8-flash-low")
+   - API quirks of a specific service ("Spotify 403 on playlist endpoint")
+   These belong in code comments, commit messages, or facts — NOT learnings.
+
+4. ENTITY LINKS ("entity_links"): Structural relationships between existing entities.
+   You MUST use ONLY these canonical relation types:
+   hosted_on, runs_on, depends_on, part_of, member_of, owned_by, managed_by, monitors,
+   treats, prescribed_for, insured_by, finances, communicates_via, located_at, uses,
+   stores, connects_to, related_to, maintains, created_by, delivers_to, advises,
+   works_at, lives_at, travels_to, subscribed_to
+   DO NOT invent new relation types. If none of the above fits, use "related_to".
+
+## Existing Database Keys & Topics:
 {inv_context}
 
-RULES:
-- If updating an existing item from the inventory above, reuse its exact ID.
+## Rules:
+- If updating an existing item, reuse its EXACT existing ID from the inventory.
 - Keep facts atomic and dense.
-- Keep narrative episodes rich with context, background, and user stance (3-5 comprehensive sentences).
-- Always include multilingual keywords (German/English synonyms, misspellings, related query terms).
-- If NOTHING persistent or new was revealed in a category, leave its array empty.
+- Keep episodes rich with context and stance (3-5 sentences).
+- Include multilingual keywords (German/English synonyms, related query terms).
+- CRITICAL: Prefer EMPTY arrays over low-value entries. When in doubt, do NOT store it.
+- A learning must pass this test: "Would this insight help me handle a SIMILAR situation in the future?" If no, don't store it.
+- Entity links must use ONLY the canonical relation types listed above.
 
 User: {user_prompt}
 Assistant: {assistant_response}
 
-Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "episodes":[], "learnings":[], "entity_links":[]}} if none):
+Output ONLY a single valid JSON object (or {{"facts":[], "episodes":[], "learnings":[], "entity_links":[]}} if nothing worth persisting):
 {{
   "facts": [
     {{
@@ -826,7 +913,8 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             sys.stderr.write(f"[PROTECTED] Skipping update to protected fact '{f['id']}' — use manual 'add' to update.\n")
                             continue
                         
-                        upsert_fact(f["id"], f.get("category", "general"), f["fact"], f.get("keywords", ""))
+                        norm_cat = _normalize_category(f.get("category", "general"), CANONICAL_FACT_CATEGORIES)
+                        upsert_fact(f["id"], norm_cat, f["fact"], f.get("keywords", ""))
                         applied_changes["facts"].append({
                             "id": f["id"],
                             "category": f.get("category", "general"),
@@ -851,9 +939,10 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                             sys.stderr.write(f"[PROTECTED] Skipping update to protected episode '{ep['id']}' — use manual 'add-episode' to update.\n")
                             continue
                         
+                        norm_topic = _normalize_category(ep.get("topic", "general"), CANONICAL_EPISODE_TOPICS)
                         upsert_episode(
                             ep["id"],
-                            ep.get("topic", "general"),
+                            norm_topic,
                             ep.get("title", ep["id"]),
                             ep["narrative"],
                             period=ep.get("period", ""),
@@ -882,9 +971,10 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                         if dry_run:
                             continue
                         
+                        norm_lcat = _normalize_category(lr.get("category", "general"), CANONICAL_LEARNING_CATEGORIES)
                         upsert_learning(
                             lr["id"],
-                            lr.get("category", "general"),
+                            norm_lcat,
                             lr["insight"],
                             context=lr.get("context", ""),
                             keywords=lr.get("keywords", "")
@@ -900,16 +990,21 @@ Output ONLY a single valid JSON object in this exact schema (or {{"facts":[], "e
                 # --- Entity Links ---
                 for el in data.get("entity_links", []):
                     if isinstance(el, dict) and "source" in el and "target" in el and "relation" in el:
+                        relation = el["relation"].strip().lower()
+                        # Normalize non-canonical relations to 'related_to'
+                        if relation not in CANONICAL_RELATIONS:
+                            sys.stderr.write(f"[NORM] Non-canonical relation '{el['relation']}' normalized to 'related_to' for {el['source']} -> {el['target']}\n")
+                            relation = "related_to"
                         if dry_run:
-                            diff_lines.append(f"  [NEW] Entity Link: {el['source']} --[{el['relation']}]--> {el['target']}")
+                            diff_lines.append(f"  [NEW] Entity Link: {el['source']} --[{relation}]--> {el['target']}")
                             continue
-                        link_entities(el["source"], el["target"], el["relation"])
+                        link_entities(el["source"], el["target"], relation)
                         applied_changes["entity_links"].append({
                             "source": el["source"],
                             "target": el["target"],
-                            "relation": el["relation"]
+                            "relation": relation
                         })
-                        print(f"Entity link synced: {el['source']} -> {el['target']}")
+                        print(f"Entity link synced: {el['source']} ->{el['target']} [{relation}]")
 
                 # Print diff summary
                 if dry_run and diff_lines:
@@ -963,6 +1058,7 @@ def consolidate_memories(dry_run: bool = False) -> list:
         print("[CONSOLIDATE] No categories with 2+ facts to consolidate.")
         return []
 
+    canonical_cats = ", ".join(sorted(CANONICAL_FACT_CATEGORIES))
     facts_json = json.dumps(categories_to_check, ensure_ascii=False, indent=2)
     prompt = f"""You are the Memory Consolidation Engine for Stephan Bolten.
 Review the following atomic facts grouped by category.
@@ -978,6 +1074,8 @@ INSTRUCTIONS:
 4. Combine the keywords/tags cleanly without duplicates.
 5. Provide a short rationale explaining why these were merged.
 6. If no facts need to be merged in a category, do not create a merge entry for it.
+7. The category MUST be one of: {canonical_cats}
+   If the existing category is not in this list, map it to the closest canonical one.
 
 Respond ONLY with valid JSON in this exact structure:
 {{
@@ -1026,7 +1124,8 @@ Respond ONLY with valid JSON in this exact structure:
             data = json.loads(json_match.group(0))
             for merge in data.get("merges", []):
                 target_id = merge.get("target_id")
-                cat_name = merge.get("category", "general")
+                raw_cat = merge.get("category", "general")
+                cat_name = _normalize_category(raw_cat, CANONICAL_FACT_CATEGORIES)
                 merged_ids = [m for m in merge.get("merged_ids", []) if m != target_id]
                 fact_text = merge.get("fact")
                 kws = merge.get("keywords", "")
@@ -1035,7 +1134,7 @@ Respond ONLY with valid JSON in this exact structure:
                 if not target_id or not merged_ids or not fact_text:
                     continue
 
-                category_facts = categories_to_check.get(cat_name, [])
+                category_facts = categories_to_check.get(raw_cat, categories_to_check.get(cat_name, []))
                 existing_merged = [m for m in merged_ids if any(f["id"] == m for f in category_facts)]
                 if not existing_merged:
                     continue
@@ -1045,7 +1144,7 @@ Respond ONLY with valid JSON in this exact structure:
                 if not dry_run:
                     with db_session() as conn:
                         cursor = conn.cursor()
-                        # 1. Update / upsert target record
+                        # 1. Update / upsert target record with normalized category
                         cursor.execute("""
                             INSERT INTO memories (id, category, fact, keywords, updated_at)
                             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -1081,6 +1180,85 @@ Respond ONLY with valid JSON in this exact structure:
             sys.stderr.write(f"Error parsing consolidation JSON: {e}\n")
 
     return consolidations
+
+
+def prune_orphan_links(dry_run: bool = False) -> int:
+    """Remove entity links where source or target IDs don't exist in any main table."""
+    with db_session() as conn:
+        cursor = conn.cursor()
+
+        # Collect all known entity IDs across all tables
+        known_ids = set()
+        for row in cursor.execute("SELECT id FROM memories"):
+            known_ids.add(row[0])
+        for row in cursor.execute("SELECT id FROM episodes"):
+            known_ids.add(row[0])
+        for row in cursor.execute("SELECT id FROM learnings"):
+            known_ids.add(row[0])
+
+        # Find orphan links
+        cursor.execute("SELECT source_id, target_id, relation FROM entity_links")
+        all_links = cursor.fetchall()
+        orphans = []
+        for src, tgt, rel in all_links:
+            if src not in known_ids and tgt not in known_ids:
+                orphans.append((src, tgt, rel))
+
+        if orphans and not dry_run:
+            for src, tgt, rel in orphans:
+                cursor.execute(
+                    "DELETE FROM entity_links WHERE source_id = ? AND target_id = ? AND relation = ?",
+                    (src, tgt, rel)
+                )
+            conn.commit()
+
+        return len(orphans)
+
+
+def normalize_existing_categories() -> dict:
+    """Batch-normalize all categories/topics to canonical taxonomies. Returns counts."""
+    counts = {"facts": 0, "learnings": 0, "episodes": 0, "links": 0}
+    with db_session() as conn:
+        cursor = conn.cursor()
+
+        # Facts
+        for fid, cat in cursor.execute("SELECT id, category FROM memories").fetchall():
+            norm = _normalize_category(cat, CANONICAL_FACT_CATEGORIES)
+            if norm != cat:
+                cursor.execute("UPDATE memories SET category = ? WHERE id = ?", (norm, fid))
+                counts["facts"] += 1
+
+        # Learnings
+        for lid, cat in cursor.execute("SELECT id, category FROM learnings").fetchall():
+            norm = _normalize_category(cat, CANONICAL_LEARNING_CATEGORIES)
+            if norm != cat:
+                cursor.execute("UPDATE learnings SET category = ? WHERE id = ?", (norm, lid))
+                counts["learnings"] += 1
+
+        # Episodes
+        for eid, topic in cursor.execute("SELECT id, topic FROM episodes").fetchall():
+            norm = _normalize_category(topic, CANONICAL_EPISODE_TOPICS)
+            if norm != topic:
+                cursor.execute("UPDATE episodes SET topic = ? WHERE id = ?", (norm, eid))
+                counts["episodes"] += 1
+
+        # Entity link relations
+        for src, tgt, rel in cursor.execute("SELECT source_id, target_id, relation FROM entity_links").fetchall():
+            rel_lower = rel.strip().lower()
+            if rel_lower not in CANONICAL_RELATIONS:
+                cursor.execute(
+                    "DELETE FROM entity_links WHERE source_id = ? AND target_id = ? AND relation = ?",
+                    (src, tgt, rel)
+                )
+                cursor.execute(
+                    "INSERT OR IGNORE INTO entity_links (source_id, target_id, relation) VALUES (?, ?, ?)",
+                    (src, tgt, "related_to")
+                )
+                counts["links"] += 1
+
+        conn.commit()
+    return counts
+
 
 def optimize_db(apply_changes: bool = False, age_decay: bool = True, consolidate: bool = False):
     """Rebuild FTS5 indexes, execute automatic episode aging, optionally consolidate duplicate facts, run VACUUM, and report stats."""
@@ -1126,6 +1304,20 @@ def optimize_db(apply_changes: bool = False, age_decay: bool = True, consolidate
             print(f"[CONSOLIDATE] Successfully consolidated {len(merges)} cluster(s).")
         else:
             print("[CONSOLIDATE] No redundant facts detected across categories.")
+
+    # Normalize all categories/topics/relations to canonical taxonomies
+    if apply_changes:
+        norm_counts = normalize_existing_categories()
+        total_norm = sum(norm_counts.values())
+        if total_norm > 0:
+            print(f"[NORMALIZE] Normalized {total_norm} entries: {norm_counts}")
+        else:
+            print("[NORMALIZE] All categories/topics/relations already canonical.")
+
+        # Prune orphan entity links (both sides point to non-existent entities)
+        orphan_count = prune_orphan_links(dry_run=False)
+        if orphan_count > 0:
+            print(f"[PRUNE] Removed {orphan_count} orphan entity link(s).")
 
     # Prune old processed queue turns (> 7 days)
     try:

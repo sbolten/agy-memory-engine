@@ -1,4 +1,4 @@
-# AGY Memory Engine (v2.0.0)
+# AGY Memory Engine (v2.1.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests: 44/44 Passing](https://img.shields.io/badge/Tests-44%2F44%20Passed-brightgreen.svg)]()
@@ -274,6 +274,20 @@ Registers the sub-millisecond transcript collector on every agent turn stop:
 python3 -m unittest discover tests/ -v
 # Ran 44 tests in 1.5s (OK)
 ```
+
+---
+
+## 🚀 Release Notes
+
+### v2.1.0 (2026-09-03)
+- **Quality-First Extraction & Consolidation Pipeline**:
+  - Strict litmust test and exclusion rules for experiential learnings (no transient bug fixes, UI tweaks or code-internal details; strictly reusable heuristics and behavioral insights).
+  - Closed canonical relationship taxonomy (26 canonical link types) preventing relationship fragmentation.
+  - Closed canonical categories across all layers (Facts, Learnings, Episodes) with automated runtime alias normalization (`_normalize_category`).
+  - Automated orphan link pruning (`prune_orphan_links`) removing severed graph relationships when entities are deleted or consolidated.
+  - Category normalization enforcement during semantic LLM fact consolidation.
+- **Unified Maintenance & Web Dashboard**:
+  - Full end-to-end integration of batch normalization and graph pruning into `optimize_db` (`compact`) CLI command and Web Dashboard `/api/optimize` endpoint.
 
 ---
 
