@@ -111,24 +111,29 @@ class TestWorkerNotification(unittest.TestCase):
         self.assertIn("Föhr Urlaub", msg)
     @unittest.mock.patch("subprocess.run")
     def test_send_telegram_notification(self, mock_run):
-        from memory_worker import send_telegram_notification
+        import memory_worker
         mock_run.return_value.returncode = 0
 
-        # When chat_id is None, should route to --reports
-        send_telegram_notification("Test Message", chat_id=None)
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--reports", cmd)
-        self.assertIn("Test Message", cmd)
+        mock_bin = unittest.mock.MagicMock()
+        mock_bin.exists.return_value = True
+        mock_bin.__str__.return_value = "/mock/bin/send_telegram.py"
 
-        # When chat_id is provided, should route to --chat-id
-        mock_run.reset_mock()
-        send_telegram_notification("Test Message 2", chat_id="12345")
-        mock_run.assert_called_once()
-        cmd2 = mock_run.call_args[0][0]
-        self.assertIn("--chat-id", cmd2)
-        self.assertIn("12345", cmd2)
-        self.assertNotIn("--reports", cmd2)
+        with unittest.mock.patch.object(memory_worker, "SEND_TELEGRAM_BIN", mock_bin):
+            # When chat_id is None, should route to --reports
+            memory_worker.send_telegram_notification("Test Message", chat_id=None)
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--reports", cmd)
+            self.assertIn("Test Message", cmd)
+
+            # When chat_id is provided, should route to --chat-id
+            mock_run.reset_mock()
+            memory_worker.send_telegram_notification("Test Message 2", chat_id="12345")
+            mock_run.assert_called_once()
+            cmd2 = mock_run.call_args[0][0]
+            self.assertIn("--chat-id", cmd2)
+            self.assertIn("12345", cmd2)
+            self.assertNotIn("--reports", cmd2)
 
 
 if __name__ == "__main__":
