@@ -69,12 +69,12 @@ def format_notification(changes: dict) -> str:
         return ""
 
     counts_summary = []
-    if facts: counts_summary.append(f"{len(facts)} Fakt{'en' if len(facts) > 1 else ''}")
-    if episodes: counts_summary.append(f"{len(episodes)} Episode{'n' if len(episodes) > 1 else ''}")
-    if learnings: counts_summary.append(f"{len(learnings)} Learning{'s' if len(learnings) > 1 else ''}")
-    if links: counts_summary.append(f"{len(links)} Link{'s' if len(links) > 1 else ''}")
+    if facts: counts_summary.append(f"{len(facts)} fact{'s' if len(facts) > 1 else ''}")
+    if episodes: counts_summary.append(f"{len(episodes)} episode{'s' if len(episodes) > 1 else ''}")
+    if learnings: counts_summary.append(f"{len(learnings)} learning{'s' if len(learnings) > 1 else ''}")
+    if links: counts_summary.append(f"{len(links)} link{'s' if len(links) > 1 else ''}")
 
-    lines = [f"🧠 *Autonomes Gedächtnis aktualisiert* (`{', '.join(counts_summary)}`)"]
+    lines = [f"🧠 *Autonomous memory updated* (`{', '.join(counts_summary)}`)"]
 
     items = []
     for f in facts:

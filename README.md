@@ -155,10 +155,10 @@ Add to your MCP settings file (e.g. `~/.gemini/antigravity-cli/mcp_config.json` 
   💾 SQLite FTS5 Memory Store (~/.gemini/memory.db)
             │
             ▼
-  📲 Instant Status Notification back to Telegram Topic / Chat
-     "🧠 Autonomes Gedächtnis aktualisiert (1 Fakt, 1 Learning)
-      • ➕ Beelink Host IP is 100.114.118.47
-      • ➕ Use CDP browser for Google Flights"
+   📲 Instant Status Notification back to Telegram Topic / Chat
+      "🧠 Autonomous memory updated (1 fact, 1 learning)
+       • ➕ Beelink Host IP is 100.114.118.47
+       • ➕ Use CDP browser for Google Flights"
 ```
 
 ### Key Synergy Highlights:

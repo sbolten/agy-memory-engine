@@ -106,7 +106,7 @@ class TestWorkerNotification(unittest.TestCase):
             "entity_links": [{"source": "infra.beelink", "target": "service.immich", "relation": "hosts"}]
         }
         msg = format_notification(changes)
-        self.assertIn("Autonomes Gedächtnis aktualisiert", msg)
+        self.assertIn("Autonomous memory updated", msg)
         self.assertIn("Golden Retriever 4 Jahre", msg)
         self.assertIn("Föhr Urlaub", msg)
     @unittest.mock.patch("subprocess.run")
