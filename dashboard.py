@@ -29,7 +29,13 @@ from config import (
     DEFAULT_TELEGRAM_CHAT_ID
 )
 from schema import db_session
-from agy_memory import extract_multilingual_tokens, get_all_vocabulary
+from agy_memory import (
+    extract_multilingual_tokens,
+    get_all_vocabulary,
+    list_snapshots,
+    create_snapshot,
+    restore_snapshot
+)
 from queue_manager import (
     get_pending_stats,
     get_pending_turns,
@@ -443,6 +449,154 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       border: 1px solid var(--card-border);
       color: var(--text-bright);
     }
+    .btn-danger {
+      background: #da3633;
+      color: #ffffff;
+      border: 1px solid rgba(248, 81, 73, 0.4);
+    }
+    .btn-danger:hover {
+      background: #f85149;
+    }
+
+    /* In-App Glassmorphism Modal */
+    .modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      padding: 16px;
+      animation: fadeIn 0.12s ease-out;
+    }
+    .modal-dialog {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      width: 100%;
+      max-width: 640px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75);
+      overflow: hidden;
+      animation: modalSlide 0.15s ease-out;
+      display: flex;
+      flex-direction: column;
+      max-height: 88vh;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid #30363d;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+    .modal-close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .modal-close-btn:hover {
+      color: var(--text-bright);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .modal-body {
+      padding: 18px 20px;
+      color: var(--text);
+      font-size: 0.9rem;
+      line-height: 1.55;
+      overflow-y: auto;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 12px 18px;
+      border-top: 1px solid #30363d;
+      background: rgba(0, 0, 0, 0.25);
+    }
+    .modal-log-box {
+      background: #090d13;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      color: #7ee787;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 300px;
+      overflow-y: auto;
+      line-height: 1.45;
+      margin-top: 10px;
+    }
+    .modal-checklist {
+      list-style: none;
+      margin: 10px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .modal-checklist li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.88rem;
+      color: var(--text);
+    }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 10000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+      max-width: 420px;
+    }
+    .toast {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-left: 4px solid var(--accent);
+      color: var(--text-bright);
+      padding: 11px 16px;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+      pointer-events: auto;
+      animation: toastIn 0.2s ease-out;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .toast.success { border-left-color: var(--success); }
+    .toast.error { border-left-color: var(--danger); }
+    .toast.warning { border-left-color: var(--warning); }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes modalSlide {
+      from { opacity: 0; transform: translateY(-12px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
@@ -455,7 +609,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="header-meta">
       <div class="badge">Model: <b id="lbl-model">-</b></div>
       <div class="badge">DB: <b id="lbl-db-size">-</b></div>
-      <button class="btn btn-secondary" onclick="switchTab('audit')">📜 Audit Log</button>
+      <button class="btn btn-secondary" onclick="switchTab('history')">📸 History & Snapshots</button>
       <button class="btn btn-secondary" onclick="fetchData(true)">🔄 Refresh</button>
       <button class="btn btn-secondary" id="btn-optimize" onclick="optimizeDb()" title="Rebuild FTS5 indexes, VACUUM DB, consolidate facts, and age episodes">🧹 Optimize DB</button>
       <button class="btn" onclick="forceWorker()">⚡ Force Queue</button>
@@ -559,11 +713,52 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="queue-items"></div>
   </div>
 
-  <!-- TAB 6: Audit Log -->
-  <div id="tab-audit" class="tab-content">
-    <h3 style="font-size:1.1rem; color:var(--text-bright); margin-bottom:15px;">Consolidation & Deduplication Audit Log</h3>
-    <div id="audit-items"></div>
+  <!-- TAB 6: History & Snapshots -->
+  <div id="tab-history" class="tab-content">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h3 style="font-size:1.15rem; color:var(--text-bright); margin-bottom:4px;">Snapshot History & Maintenance Audit</h3>
+        <p style="font-size:0.8rem; color:var(--text-muted);">Inspect automatic optimization snapshots, rollback database to previous versions, and view consolidation logs.</p>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="pill active h-subtab-btn" id="btn-subtab-snapshots" style="cursor:pointer;" onclick="switchHistorySubTab('snapshots', event)">📸 Snapshots (<span id="cnt-snapshots-tab">0</span>)</button>
+        <button class="pill h-subtab-btn" id="btn-subtab-audit" style="cursor:pointer;" onclick="switchHistorySubTab('audit', event)">🧠 Consolidation Audit (<span id="cnt-audit-tab">0</span>)</button>
+        <button class="btn btn-secondary" style="font-size:0.75rem; padding:4px 10px;" onclick="createManualSnapshot()" title="Take an immediate backup snapshot of current DB">📸 Take Snapshot</button>
+      </div>
+    </div>
+
+    <!-- Snapshots Sub-Section -->
+    <div id="history-sub-snapshots">
+      <div id="snapshot-items"></div>
+    </div>
+
+    <!-- Consolidation Audit Log Sub-Section -->
+    <div id="history-sub-audit" style="display:none;">
+      <div id="audit-items"></div>
+    </div>
   </div>
+
+  <!-- Reusable In-App Dark Modal -->
+  <div id="modal-backdrop" class="modal-backdrop" style="display:none;" onclick="handleModalBackdropClick(event)">
+    <div class="modal-dialog" id="modal-container">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span id="modal-icon" style="font-size:1.25rem;">✨</span>
+          <span id="modal-title">Modal Title</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <!-- Dynamic body content -->
+      </div>
+      <div class="modal-footer" id="modal-footer">
+        <!-- Dynamic footer buttons -->
+      </div>
+    </div>
+  </div>
+
+  <!-- In-App Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
 
   <script>
     let rawData = null;
@@ -581,8 +776,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let lastRenderedLearningsHash = '';
     let lastRenderedGraphHash = '';
     let lastRenderedAuditHash = '';
+    let lastRenderedSnapshotsHash = '';
+    let currentHistorySubTab = 'snapshots';
 
     function switchTab(name) {
+      if (name === 'audit') {
+        name = 'history';
+        switchHistorySubTab('audit');
+      }
       currentActiveTab = name;
       document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
       const activeCard = document.getElementById('card-' + name);
@@ -598,6 +799,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       const targetTab = document.getElementById('tab-' + name);
       if (targetTab) targetTab.classList.add('active');
+    }
+
+    function switchHistorySubTab(subtab, ev) {
+      currentHistorySubTab = subtab;
+      document.querySelectorAll('.h-subtab-btn').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById('btn-subtab-' + subtab);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const subSnaps = document.getElementById('history-sub-snapshots');
+      const subAudit = document.getElementById('history-sub-audit');
+      if (subSnaps) subSnaps.style.display = subtab === 'snapshots' ? 'block' : 'none';
+      if (subAudit) subAudit.style.display = subtab === 'audit' ? 'block' : 'none';
     }
 
     function clearSearch() {
@@ -648,7 +861,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const data = await res.json();
         rawData = data;
 
-        document.getElementById('lbl-model').innerText = data.model || 'gemini-3.7-flash-high';
+        document.getElementById('lbl-model').innerText = data.model || 'gemini-3.7-flash-low';
         document.getElementById('lbl-db-size').innerText = data.db_size || '-';
         document.getElementById('cnt-facts').innerText = data.counts.facts || 0;
         document.getElementById('cnt-episodes').innerText = data.counts.episodes || 0;
@@ -663,7 +876,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         renderEpisodes(data.episodes, forceDomRefresh);
         renderLearnings(data.learnings, forceDomRefresh);
         renderGraph(data.links, forceDomRefresh);
+        renderSnapshots(data.snapshots, forceDomRefresh);
         renderAudit(data.audit, forceDomRefresh);
+
+        const snCnt = (data.snapshots || []).length;
+        const auCnt = (data.audit || []).length;
+        const cntSnTab = document.getElementById('cnt-snapshots-tab');
+        if (cntSnTab) cntSnTab.innerText = snCnt;
+        const cntAuTab = document.getElementById('cnt-audit-tab');
+        if (cntAuTab) cntAuTab.innerText = auCnt;
       } catch (e) {
         console.error("Failed to load dashboard data", e);
       }
@@ -1055,8 +1276,61 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `;
     }
 
+    function renderSnapshots(snapshots, force = false) {
+      const cont = document.getElementById('snapshot-items');
+      const tabCnt = document.getElementById('cnt-snapshots-tab');
+      if (tabCnt) tabCnt.innerText = (snapshots || []).length;
+
+      const hash = JSON.stringify(snapshots || []);
+      if (!force && hash === lastRenderedSnapshotsHash) return;
+      lastRenderedSnapshotsHash = hash;
+
+      if (!snapshots || snapshots.length === 0) {
+        cont.innerHTML = '<p style="color:var(--text-muted); padding:30px; text-align:center;">No backup snapshots found in ~/.gemini/archive.</p>';
+        return;
+      }
+
+      cont.innerHTML = snapshots.map((s, idx) => {
+        const st = s.stats || {};
+        let tagClass = 'category';
+        if (s.tag === 'manual') tagClass = 'active';
+        if (s.tag === 'pre-restore') tagClass = 'cooling';
+
+        return `
+          <div class="item-card" style="border-left: 3px solid ${idx === 0 ? 'var(--accent)' : 'var(--card-border)'}; margin-bottom:12px;">
+            <div class="item-header">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="item-id" style="font-size:0.95rem; color:var(--text-bright);">
+                  📸 ${escapeHtml(s.filename)}
+                </span>
+                <span class="pill ${tagClass}">${s.tag.toUpperCase()}</span>
+                ${idx === 0 ? '<span class="pill active" style="font-size:0.7rem;">LATEST</span>' : ''}
+              </div>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <span style="font-size:0.8rem; color:var(--text-muted); font-family:monospace;">${s.created_at}</span>
+                <span class="badge" style="font-size:0.75rem; padding:2px 8px;">${s.size_kb}</span>
+                <button class="btn btn-secondary" style="font-size:0.75rem; padding:3px 10px; border-color:rgba(248,81,73,0.4); color:var(--danger);" onclick="promptRestoreSnapshot('${escapeHtml(s.filename)}', '${escapeHtml(s.created_at)}', '${st.facts || 0} Facts, ${st.episodes || 0} Episodes, ${st.learnings || 0} Learnings, ${st.links || 0} Links')" title="Rollback database to this snapshot">
+                  ⏮️ Restore
+                </button>
+              </div>
+            </div>
+            
+            <div style="display:flex; gap:12px; margin-top:8px; font-size:0.8rem; color:var(--text-muted); flex-wrap:wrap;">
+              <span>🧱 <b>${st.facts || 0}</b> Facts</span>
+              <span>📖 <b>${st.episodes || 0}</b> Episodes</span>
+              <span>💡 <b>${st.learnings || 0}</b> Learnings</span>
+              <span>🔗 <b>${st.links || 0}</b> Links</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
     function renderAudit(audit, force = false) {
       const cont = document.getElementById('audit-items');
+      const tabCnt = document.getElementById('cnt-audit-tab');
+      if (tabCnt) tabCnt.innerText = (audit || []).length;
+
       const hash = JSON.stringify(audit || []);
       if (!force && hash === lastRenderedAuditHash) return;
       lastRenderedAuditHash = hash;
@@ -1078,6 +1352,96 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
         </div>
       `).join('');
+    }
+
+    // Modal & Toast Controller
+    function closeModal() {
+      const backdrop = document.getElementById('modal-backdrop');
+      if (backdrop) backdrop.style.display = 'none';
+    }
+
+    function handleModalBackdropClick(e) {
+      if (e.target && e.target.id === 'modal-backdrop') {
+        closeModal();
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeModal();
+      }
+    });
+
+    function showConfirmModal({ title, icon = '❓', message, bulletPoints = [], confirmText = 'Confirm', confirmStyle = 'btn', onConfirm }) {
+      document.getElementById('modal-icon').innerText = icon;
+      document.getElementById('modal-title').innerText = title;
+
+      let bodyHtml = `<p style="margin-bottom:10px; color:var(--text-bright); font-size:0.92rem;">${escapeHtml(message)}</p>`;
+      if (bulletPoints && bulletPoints.length > 0) {
+        bodyHtml += `<ul class="modal-checklist">` + bulletPoints.map(p => `<li><span>${p}</span></li>`).join('') + `</ul>`;
+      }
+      document.getElementById('modal-body').innerHTML = bodyHtml;
+
+      const footer = document.getElementById('modal-footer');
+      footer.innerHTML = `
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn ${confirmStyle}" id="modal-btn-confirm">${escapeHtml(confirmText)}</button>
+      `;
+
+      document.getElementById('modal-btn-confirm').onclick = async () => {
+        closeModal();
+        if (onConfirm) await onConfirm();
+      };
+
+      document.getElementById('modal-backdrop').style.display = 'flex';
+    }
+
+    function showResultModal({ title, icon = 'ℹ️', message, logOutput = '', isError = false }) {
+      document.getElementById('modal-icon').innerText = icon;
+      document.getElementById('modal-title').innerText = title;
+
+      let bodyHtml = `<p style="margin-bottom:8px; color:${isError ? 'var(--danger)' : 'var(--text-bright)'}; font-size:0.92rem;">${escapeHtml(message)}</p>`;
+      if (logOutput) {
+        bodyHtml += `<div class="modal-log-box" id="modal-log-content">${escapeHtml(logOutput)}</div>`;
+      }
+      document.getElementById('modal-body').innerHTML = bodyHtml;
+
+      const footer = document.getElementById('modal-footer');
+      footer.innerHTML = `
+        ${logOutput ? `<button class="btn btn-secondary" style="margin-right:auto;" onclick="copyModalLog()">📋 Copy Report</button>` : ''}
+        <button class="btn ${isError ? 'btn-secondary' : ''}" onclick="closeModal()">Done</button>
+      `;
+
+      document.getElementById('modal-backdrop').style.display = 'flex';
+    }
+
+    function copyModalLog() {
+      const logBox = document.getElementById('modal-log-content');
+      if (logBox) {
+        navigator.clipboard.writeText(logBox.innerText);
+        showToast('Report copied to clipboard', 'success', 2500);
+      }
+    }
+
+    function showToast(message, type = 'info', duration = 3500) {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+
+      const icons = { info: 'ℹ️', success: '✅', error: '⚠️', warning: '⚡' };
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.innerHTML = `
+        <span style="font-size:1.1rem;">${icons[type] || 'ℹ️'}</span>
+        <span style="flex:1;">${escapeHtml(message)}</span>
+      `;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.transition = 'opacity 0.25s, transform 0.25s';
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(8px)';
+        setTimeout(() => toast.remove(), 250);
+      }, duration);
     }
 
     function debounceSearch() {
@@ -1151,64 +1515,204 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    async function forceWorker() {
-      if (!confirm('Process pending conversation queue immediately without waiting for debounce timeout?')) return;
-      try {
-        const res = await fetch('/api/force-worker', { method: 'POST' });
-        const data = await res.json();
-        alert(data.message || 'Worker finished successfully!');
-        lastRenderedQueueHash = '';
-        fetchData(true);
-      } catch (e) {
-        alert('Worker execution error: ' + e);
-      }
+    function forceWorker() {
+      showConfirmModal({
+        title: '⚡ Process Pending Conversation Queue',
+        icon: '⚡',
+        message: 'Immediately trigger memory_worker.py to batch-process all pending conversation turns without waiting for the 300s calm-memory debounce window.',
+        bulletPoints: [
+          '⚡ Groups pending turns into a shared batch',
+          '🧠 Runs Gemini LLM multi-layer extraction',
+          '📨 Sends Telegram batch summary notification'
+        ],
+        confirmText: 'Process Batch Now',
+        onConfirm: async () => {
+          showToast('Processing queue turns...', 'info', 3000);
+          try {
+            const res = await fetch('/api/force-worker', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showResultModal({
+                title: '✅ Queue Processed',
+                icon: '⚡',
+                message: 'Conversation queue was batch-processed successfully.',
+                logOutput: data.message
+              });
+            } else {
+              showResultModal({
+                title: '⚠️ Worker Error',
+                icon: '❌',
+                message: 'Worker encountered an issue while processing.',
+                logOutput: data.message || data.error,
+                isError: true
+              });
+            }
+            lastRenderedQueueHash = '';
+            fetchData(true);
+          } catch (e) {
+            showToast('Worker execution failed: ' + e, 'error', 4000);
+          }
+        }
+      });
     }
 
-    async function clearProcessedQueue() {
-      if (!confirm('Purge all processed and skipped conversation turns from the queue database?')) return;
-      try {
-        const res = await fetch('/api/clear-processed-queue', { method: 'POST' });
-        const data = await res.json();
-        alert(data.message || 'Processed turns cleared.');
-        lastRenderedQueueHash = '';
-        fetchData(true);
-      } catch (e) {
-        alert('Error clearing queue: ' + e);
-      }
+    function clearProcessedQueue() {
+      showConfirmModal({
+        title: '🗑️ Purge Processed Conversation Turns',
+        icon: '🗑️',
+        message: 'Permanently remove all processed and skipped conversation turns from the queue database (~/.gemini/turn_queue.db).',
+        bulletPoints: [
+          '🧹 Removes processed and skipped entries',
+          '🛡️ Leaves pending queue turns untouched',
+          '🗜️ Optimizes queue database storage'
+        ],
+        confirmText: 'Purge Processed',
+        confirmStyle: 'btn-danger',
+        onConfirm: async () => {
+          try {
+            const res = await fetch('/api/clear-processed-queue', { method: 'POST' });
+            const data = await res.json();
+            showToast(data.message || 'Processed turns cleared from queue.', 'success', 3500);
+            lastRenderedQueueHash = '';
+            fetchData(true);
+          } catch (e) {
+            showToast('Error clearing queue: ' + e, 'error', 4000);
+          }
+        }
+      });
     }
 
-    async function optimizeDb() {
-      if (!confirm('Run full memory optimization?\n\nThis will:\n• Create a snapshot backup in ~/.gemini/archive\n• Age episodes (active -> cooling -> historic)\n• Consolidate & deduplicate facts via LLM\n• Prune old queue turns (> 7 days)\n• Rebuild FTS5 full-text search indexes\n• VACUUM the SQLite database')) return;
+    function optimizeDb() {
+      showConfirmModal({
+        title: '🧹 Run Full Memory Optimization',
+        icon: '🧹',
+        message: 'Execute complete cognitive memory engine maintenance, semantic deduplication, and database compacting.',
+        bulletPoints: [
+          '📸 Create snapshot backup in ~/.gemini/archive (with 20-snapshot retention)',
+          '⏳ Episode state decay (active ➔ cooling ➔ historic)',
+          '🧠 Semantic LLM fact deduplication & consolidation',
+          '🗑️ Automatic queue pruning (> 7 days retention)',
+          '🔍 Rebuild all SQLite FTS5 full-text search indexes',
+          '🗜️ Execute SQLite VACUUM database compaction'
+        ],
+        confirmText: 'Start Optimization',
+        onConfirm: async () => {
+          const btn = document.getElementById('btn-optimize');
+          const origText = btn ? btn.innerText : '🧹 Optimize DB';
+          if (btn) {
+            btn.disabled = true;
+            btn.innerText = '⏳ Optimizing...';
+          }
+          showToast('Database optimization started...', 'info', 4000);
 
-      const btn = document.getElementById('btn-optimize');
-      const origText = btn ? btn.innerText : '🧹 Optimize DB';
-      if (btn) {
-        btn.disabled = true;
-        btn.innerText = '⏳ Optimizing...';
-      }
+          try {
+            const res = await fetch('/api/optimize', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showResultModal({
+                title: '✅ Optimization Completed',
+                icon: '🧹',
+                message: 'All memory layers and FTS5 indexes were optimized successfully.',
+                logOutput: data.message
+              });
+              showToast('Memory database optimized successfully!', 'success', 3500);
+            } else {
+              showResultModal({
+                title: '⚠️ Optimization Failed',
+                icon: '❌',
+                message: 'Optimization encountered an error.',
+                logOutput: data.message || data.error,
+                isError: true
+              });
+            }
+            lastRenderedFactsHash = '';
+            lastRenderedEpisodesHash = '';
+            lastRenderedLearningsHash = '';
+            lastRenderedGraphHash = '';
+            lastRenderedAuditHash = '';
+            lastRenderedSnapshotsHash = '';
+            lastRenderedQueueHash = '';
+            fetchData(true);
+          } catch (e) {
+            showToast('Optimization failed: ' + e, 'error', 4000);
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = origText;
+            }
+          }
+        }
+      });
+    }
 
+    function promptRestoreSnapshot(filename, createdAt, statsSummary) {
+      showConfirmModal({
+        title: '⚠️ Rollback Memory Database',
+        icon: '⏮️',
+        message: `Are you sure you want to rollback the memory engine to snapshot "${filename}"?`,
+        bulletPoints: [
+          `📅 Snapshot Date: ${createdAt}`,
+          `📊 Snapshot Content: ${statsSummary}`,
+          '🛡️ A safety backup of your CURRENT state will be taken automatically before restoring',
+          '🔄 FTS5 indexes and VACUUM will be run automatically after restore'
+        ],
+        confirmText: 'Confirm Rollback',
+        confirmStyle: 'btn-danger',
+        onConfirm: async () => {
+          showToast(`Restoring snapshot ${filename}...`, 'info', 4000);
+          try {
+            const res = await fetch('/api/restore-snapshot', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename })
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              const st = data.counts || {};
+              showResultModal({
+                title: '✅ Database Restored',
+                icon: '⏮️',
+                message: data.message,
+                logOutput: `[RESTORE] Successfully rolled back to: ${data.restored_snapshot}\n[SAFETY] Safety backup of previous state: ${data.safety_backup}\n[STATS] Active DB State: ${st.facts || 0} Facts, ${st.episodes || 0} Episodes, ${st.learnings || 0} Learnings, ${st.links || 0} Links (Size: ${data.db_size})`
+              });
+              showToast('Database rolled back successfully!', 'success', 3500);
+            } else {
+              showResultModal({
+                title: '⚠️ Restore Failed',
+                icon: '❌',
+                message: data.message || data.error,
+                isError: true
+              });
+            }
+            lastRenderedFactsHash = '';
+            lastRenderedEpisodesHash = '';
+            lastRenderedLearningsHash = '';
+            lastRenderedGraphHash = '';
+            lastRenderedAuditHash = '';
+            lastRenderedSnapshotsHash = '';
+            lastRenderedQueueHash = '';
+            fetchData(true);
+          } catch (e) {
+            showToast('Restore request failed: ' + e, 'error', 4000);
+          }
+        }
+      });
+    }
+
+    async function createManualSnapshot() {
+      showToast('Creating manual snapshot...', 'info', 2000);
       try {
-        const res = await fetch('/api/optimize', { method: 'POST' });
+        const res = await fetch('/api/create-snapshot', { method: 'POST' });
         const data = await res.json();
         if (data.status === 'ok') {
-          alert(data.message || 'Database optimization completed successfully!');
+          showToast(`📸 Snapshot created: ${data.filename}`, 'success', 3500);
+          lastRenderedSnapshotsHash = '';
+          fetchData(true);
         } else {
-          alert('Optimization failed: ' + (data.message || data.error || 'Unknown error'));
+          showToast(`Snapshot error: ${data.message}`, 'error', 4000);
         }
-        lastRenderedFactsHash = '';
-        lastRenderedEpisodesHash = '';
-        lastRenderedLearningsHash = '';
-        lastRenderedGraphHash = '';
-        lastRenderedAuditHash = '';
-        lastRenderedQueueHash = '';
-        fetchData(true);
       } catch (e) {
-        alert('Optimization error: ' + e);
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.innerText = origText;
-        }
+        showToast(`Failed to create snapshot: ${e}`, 'error', 4000);
       }
     }
 
@@ -1326,6 +1830,28 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "error", "message": str(e)}, status=500)
             return
 
+        if url.path == "/api/create-snapshot":
+            try:
+                res = create_snapshot(tag="manual")
+                self._send_json(res)
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)}, status=500)
+            return
+
+        if url.path == "/api/restore-snapshot":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                req_data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+                filename = req_data.get("filename")
+                if not filename:
+                    self._send_json({"status": "error", "message": "Missing 'filename' in request."}, status=400)
+                    return
+                res = restore_snapshot(filename)
+                self._send_json(res)
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)}, status=500)
+            return
+
         self._send_json({"error": "Not Found"}, status=404)
 
     def _handle_stats(self):
@@ -1344,29 +1870,32 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
                 cursor.execute("SELECT COUNT(*) FROM entity_links")
                 cnt_links = cursor.fetchone()[0]
 
-                # Fetch all facts
-                cursor.execute("SELECT id, category, fact, keywords, updated_at FROM memories ORDER BY updated_at DESC")
+                # Fetch all facts (convert UTC timestamps to local system timezone)
+                cursor.execute("SELECT id, category, fact, keywords, datetime(updated_at, 'localtime') FROM memories ORDER BY updated_at DESC")
                 facts = [{"id": r[0], "category": r[1], "fact": r[2], "keywords": r[3], "updated_at": str(r[4])} for r in cursor.fetchall()]
 
-                # Fetch all episodes
-                cursor.execute("SELECT id, topic, title, period, status, narrative, entities, stance, updated_at FROM episodes ORDER BY updated_at DESC")
+                # Fetch all episodes (convert UTC timestamps to local system timezone)
+                cursor.execute("SELECT id, topic, title, period, status, narrative, entities, stance, datetime(updated_at, 'localtime') FROM episodes ORDER BY updated_at DESC")
                 episodes = [{"id": r[0], "topic": r[1], "title": r[2], "period": r[3], "status": r[4], "narrative": r[5], "entities": r[6], "stance": r[7], "updated_at": str(r[8])} for r in cursor.fetchall()]
 
-                # Fetch all learnings
-                cursor.execute("SELECT id, category, insight, context, keywords, updated_at FROM learnings ORDER BY updated_at DESC")
+                # Fetch all learnings (convert UTC timestamps to local system timezone)
+                cursor.execute("SELECT id, category, insight, context, keywords, datetime(updated_at, 'localtime') FROM learnings ORDER BY updated_at DESC")
                 learnings = [{"id": r[0], "category": r[1], "insight": r[2], "context": r[3], "keywords": r[4], "updated_at": str(r[5])} for r in cursor.fetchall()]
 
                 # Fetch all links
                 cursor.execute("SELECT source_id, target_id, relation FROM entity_links ORDER BY source_id")
                 links = [{"source_id": r[0], "target_id": r[1], "relation": r[2]} for r in cursor.fetchall()]
 
-                # Fetch audit log
-                cursor.execute("SELECT action, category, target_id, diff_summary, rationale, timestamp FROM consolidation_log ORDER BY id DESC LIMIT 50")
+                # Fetch audit log (convert UTC timestamps to local system timezone)
+                cursor.execute("SELECT action, category, target_id, diff_summary, rationale, datetime(timestamp, 'localtime') FROM consolidation_log ORDER BY id DESC LIMIT 50")
                 audit = [{"action": r[0], "category": r[1], "target_id": r[2], "diff_summary": r[3], "rationale": r[4], "timestamp": str(r[5])} for r in cursor.fetchall()]
 
             # Queue stats
             q_stats = get_pending_stats()
             q_turns = get_recent_turns(limit=50)
+
+            # Snapshots
+            snapshots = list_snapshots()
 
             # DB file size
             db_size = "-"
@@ -1395,6 +1924,7 @@ class MemoryDashboardHandler(BaseHTTPRequestHandler):
                 "episodes": episodes,
                 "learnings": learnings,
                 "links": links,
+                "snapshots": snapshots,
                 "audit": audit
             })
         except Exception as e:

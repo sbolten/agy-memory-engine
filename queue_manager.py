@@ -150,7 +150,7 @@ def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_D
         cursor = conn.cursor()
         if status:
             cursor.execute("""
-                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error, batch_id, processed_at
+                SELECT id, source, chat_id, user_prompt, assistant_response, datetime(created_at, 'localtime'), status, extracted_summary, error, batch_id, datetime(processed_at, 'localtime')
                 FROM turn_queue
                 WHERE status = ?
                 ORDER BY id DESC
@@ -158,7 +158,7 @@ def get_recent_turns(limit: int = 50, status: str = None, db_path: str = QUEUE_D
             """, (status, limit))
         else:
             cursor.execute("""
-                SELECT id, source, chat_id, user_prompt, assistant_response, created_at, status, extracted_summary, error, batch_id, processed_at
+                SELECT id, source, chat_id, user_prompt, assistant_response, datetime(created_at, 'localtime'), status, extracted_summary, error, batch_id, datetime(processed_at, 'localtime')
                 FROM turn_queue
                 ORDER BY id DESC
                 LIMIT ?

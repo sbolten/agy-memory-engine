@@ -44,7 +44,7 @@ def get_config(key: str, default: str = "") -> str:
 
 
 # --- Model Configuration ---
-DEFAULT_MODEL = "gemini-3.7-flash-high"
+DEFAULT_MODEL = "gemini-3.8-flash-low"
 MODEL_NAME = get_config("AGY_MEMORY_MODEL", DEFAULT_MODEL)
 CACHE_PATH = os.environ.get("AGY_MEMORY_CACHE", str(Path.home() / ".gemini" / "memory_model_cache.txt"))
 

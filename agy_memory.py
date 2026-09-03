@@ -20,6 +20,7 @@ import difflib
 import datetime
 from contextlib import contextmanager
 
+import schema
 from schema import db_session, DB_PATH, PROTECTED_CATEGORIES
 from config import (
     MODEL_NAME,
@@ -191,7 +192,7 @@ def discover_and_cache_latest_flash_low_model() -> str:
         lines = res.stdout.splitlines()
         for line in lines:
             parts = line.strip().split()
-            if parts and ("flash" in parts[0].lower() or "gemini" in parts[0].lower()):
+            if parts and "flash" in parts[0].lower() and "low" in parts[0].lower():
                 model_id = parts[0]
                 try:
                     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
@@ -1184,6 +1185,140 @@ def optimize_db(apply_changes: bool = False, age_decay: bool = True, consolidate
 # Keep backward compatibility alias
 compact_all = optimize_db
 
+
+def list_snapshots() -> list:
+    """List all available snapshots from ~/.gemini/archive with file metadata and record counts."""
+    import glob
+    archive_dir = os.path.expanduser("~/.gemini/archive")
+    if not os.path.exists(archive_dir):
+        return []
+
+    files = sorted(
+        glob.glob(os.path.join(archive_dir, "memory_db_backup_*.bak")),
+        key=os.path.getmtime,
+        reverse=True
+    )
+
+    snapshots = []
+    for f in files:
+        fname = os.path.basename(f)
+        sz = os.path.getsize(f)
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(f)).strftime("%Y-%m-%d %H:%M:%S")
+
+        tag = "optimization"
+        if "_manual" in fname:
+            tag = "manual"
+        elif "_pre_restore" in fname:
+            tag = "pre-restore"
+
+        stats = {"facts": 0, "episodes": 0, "learnings": 0, "links": 0}
+        try:
+            conn = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM memories")
+            stats["facts"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM episodes")
+            stats["episodes"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM learnings")
+            stats["learnings"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM entity_links")
+            stats["links"] = cur.fetchone()[0]
+            conn.close()
+        except Exception:
+            pass
+
+        snapshots.append({
+            "filename": fname,
+            "created_at": mtime,
+            "size_kb": f"{sz / 1024:.1f} KB",
+            "tag": tag,
+            "stats": stats
+        })
+    return snapshots
+
+
+def create_snapshot(tag: str = "manual", db_path: str = None) -> dict:
+    """Create an immediate snapshot backup of the current database state."""
+    target_db = db_path or schema.DB_PATH
+    archive_dir = os.path.expanduser("~/.gemini/archive")
+    os.makedirs(archive_dir, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    suffix = f"_{tag}" if tag else ""
+    backup_file = os.path.join(archive_dir, f"memory_db_backup_{ts}{suffix}.bak")
+
+    # Ensure DB schema exists
+    if not os.path.exists(target_db):
+        with db_session(target_db):
+            pass
+
+    shutil.copy2(target_db, backup_file)
+    return {
+        "status": "ok",
+        "filename": os.path.basename(backup_file),
+        "message": f"Snapshot created: {os.path.basename(backup_file)}"
+    }
+
+
+def restore_snapshot(filename: str, db_path: str = None) -> dict:
+    """Restore the memory database from a selected backup snapshot in ~/.gemini/archive."""
+    target_db = db_path or schema.DB_PATH
+    archive_dir = os.path.expanduser("~/.gemini/archive")
+    # Security check: strict filename validation to prevent path traversal
+    if not re.match(r"^memory_db_backup_[a-zA-Z0-9_\-\.]+\.bak$", filename):
+        raise ValueError("Invalid snapshot filename format.")
+
+    source_path = os.path.join(archive_dir, filename)
+    if not os.path.exists(source_path):
+        raise FileNotFoundError(f"Snapshot '{filename}' not found in archive directory.")
+
+    # 1. Take safety snapshot of current state before overwrite
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    safety_backup = os.path.join(archive_dir, f"memory_db_backup_{ts}_pre_restore.bak")
+    if os.path.exists(target_db):
+        shutil.copy2(target_db, safety_backup)
+
+    # 2. Overwrite target_db with target snapshot
+    shutil.copy2(source_path, target_db)
+
+    # 3. Rebuild FTS5 indexes and count records
+    with db_session(target_db) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM memories")
+        cnt_facts = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM episodes")
+        cnt_episodes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM learnings")
+        cnt_learnings = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM entity_links")
+        cnt_links = cursor.fetchone()[0]
+
+        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');")
+        conn.execute("INSERT INTO entity_links_fts(entity_links_fts) VALUES('rebuild');")
+        conn.commit()
+
+    # 4. Run VACUUM
+    conn_raw = sqlite3.connect(target_db)
+    conn_raw.execute("VACUUM;")
+    conn_raw.close()
+
+    db_size = os.path.getsize(target_db)
+    return {
+        "status": "ok",
+        "message": f"Successfully restored to snapshot {filename}.",
+        "restored_snapshot": filename,
+        "safety_backup": os.path.basename(safety_backup),
+        "db_size": f"{db_size / 1024:.1f} KB",
+        "counts": {
+            "facts": cnt_facts,
+            "episodes": cnt_episodes,
+            "learnings": cnt_learnings,
+            "links": cnt_links
+        }
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="AGY Multi-Layer Cognitive Memory Engine")
     parser.add_argument("--version", "-v", action="version", version=f"%(prog)s {__version__}")
@@ -1254,6 +1389,13 @@ def main():
     cp.add_argument("--consolidate", action="store_true", default=True, help="Run semantic deduplication (default: True)")
     cp.add_argument("--no-consolidate", action="store_false", dest="consolidate", help="Skip semantic deduplication")
 
+    # Snapshot management CLI commands
+    sn = subparsers.add_parser("snapshots", help="List database backup snapshots")
+    sn.add_argument("--create", action="store_true", help="Create a new manual snapshot")
+
+    rs = subparsers.add_parser("restore", help="Restore database from a backup snapshot")
+    rs.add_argument("filename", type=str, help="Snapshot filename to restore (e.g. memory_db_backup_2026-09-02_092632.bak)")
+
     subparsers.add_parser("list", help="List all stored facts, episodes, learnings, and entity links")
 
     ui_p = subparsers.add_parser("ui", help="Launch real-time debug web dashboard")
@@ -1293,6 +1435,22 @@ def main():
             age_decay=not getattr(args, 'no_age', False),
             consolidate=getattr(args, 'consolidate', True)
         )
+    elif args.command == "snapshots":
+        if args.create:
+            res = create_snapshot(tag="manual")
+            print(f"[SUCCESS] {res['message']}")
+        else:
+            snaps = list_snapshots()
+            print(f"Found {len(snaps)} snapshot(s) in ~/.gemini/archive:")
+            for s in snaps:
+                st = s["stats"]
+                print(f"  • {s['filename']} ({s['size_kb']}, {s['created_at']}) [{s['tag']}] -> {st['facts']} facts, {st['episodes']} eps, {st['learnings']} lrn, {st['links']} links")
+    elif args.command == "restore":
+        res = restore_snapshot(args.filename)
+        print(f"[SUCCESS] {res['message']}")
+        print(f"Safety backup: {res['safety_backup']}")
+        st = res["counts"]
+        print(f"Database state: {st['facts']} facts, {st['episodes']} eps, {st['learnings']} lrn, {st['links']} links (size: {res['db_size']})")
     elif args.command == "list":
         list_all()
     elif args.command in ("ui", "dashboard"):

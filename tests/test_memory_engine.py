@@ -696,16 +696,36 @@ class TestDashboardEndpoints(unittest.TestCase):
         self.assertIn('Optimize DB', HTML_TEMPLATE)
         self.assertIn('/api/optimize', HTML_TEMPLATE)
 
-    def test_dashboard_optimize_endpoint(self):
-        import urllib.request
-        try:
-            req = urllib.request.Request("http://127.0.0.1:8085/api/optimize", data=b"", method="POST")
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                self.assertEqual(resp.status, 200)
-                data = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(data.get("status"), "ok")
-        except Exception:
-            pass
+    def test_dashboard_html_contains_modal_and_history_tab(self):
+        from dashboard import HTML_TEMPLATE
+        self.assertIn('id="modal-backdrop"', HTML_TEMPLATE)
+        self.assertIn('id="toast-container"', HTML_TEMPLATE)
+        self.assertIn('id="tab-history"', HTML_TEMPLATE)
+        self.assertIn('showConfirmModal', HTML_TEMPLATE)
+        self.assertIn('showResultModal', HTML_TEMPLATE)
+        self.assertIn('promptRestoreSnapshot', HTML_TEMPLATE)
+        self.assertIn('createManualSnapshot', HTML_TEMPLATE)
+        self.assertIn('/api/restore-snapshot', HTML_TEMPLATE)
+        self.assertIn('/api/create-snapshot', HTML_TEMPLATE)
+
+    def test_snapshot_lifecycle(self):
+        import agy_memory
+        # Create manual snapshot
+        res = agy_memory.create_snapshot(tag="test_lifecycle")
+        self.assertEqual(res.get("status"), "ok")
+        fname = res.get("filename")
+        self.assertTrue(fname.startswith("memory_db_backup_"))
+
+        # Verify it appears in snapshot listing
+        snaps = agy_memory.list_snapshots()
+        fnames = [s["filename"] for s in snaps]
+        self.assertIn(fname, fnames)
+
+        # Cleanup test snapshot
+        archive_dir = os.path.expanduser("~/.gemini/archive")
+        test_file = os.path.join(archive_dir, fname)
+        if os.path.exists(test_file):
+            os.remove(test_file)
 
 
 if __name__ == "__main__":

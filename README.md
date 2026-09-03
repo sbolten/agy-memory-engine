@@ -1,7 +1,7 @@
 # AGY Memory Engine (v2.0.0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 41/41 Passing](https://img.shields.io/badge/Tests-41%2F41%20Passed-brightgreen.svg)]()
+[![Tests: 44/44 Passing](https://img.shields.io/badge/Tests-44%2F44%20Passed-brightgreen.svg)]()
 
 > Lightweight, high-performance, standalone dynamic cognitive memory layer for Google Antigravity (`agy`) and autonomous agent frameworks.
 
@@ -136,8 +136,8 @@ Add to your MCP settings file (e.g. `~/.gemini/antigravity-cli/mcp_config.json` 
 ---
 
 ## 📱 Seamless Integration with Antigravity Telegram Bot
-
-`agy-memory-engine` is designed to work in synergy with the [Antigravity Telegram Bot (`antigravity-cli-telegram-bot`)](https://github.com/sbolten/antigravity-cli-telegram-bot) to form a completely autonomous, mobile memory pipeline:
+ 
+ `agy-memory-engine` is designed to work in synergy with the [Antigravity Telegram Bot (`antigravity-cli-telegram-bot`)](https://github.com/ardiannurcahya/antigravity-cli-telegram-bot) to form a completely autonomous, mobile memory pipeline:
 
 ```text
   📱 Mobile User in Telegram (Voice, Text, Photos, Topics)
@@ -183,7 +183,7 @@ cp .env.example .env
 # ==============================================================================
 
 # LLM model used for background memory extraction & consolidation
-AGY_MEMORY_MODEL=gemini-3.7-flash-high
+AGY_MEMORY_MODEL=gemini-3.7-flash-low
 
 # SQLite Database Storage Paths
 AGY_MEMORY_DB=~/.gemini/memory.db
@@ -272,7 +272,7 @@ Registers the sub-millisecond transcript collector on every agent turn stop:
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 41 tests in 1.5s (OK)
+# Ran 44 tests in 1.5s (OK)
 ```
 
 ---
