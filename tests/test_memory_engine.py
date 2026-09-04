@@ -834,6 +834,66 @@ class TestMigrationV2ToV21(unittest.TestCase):
             os.remove(report_live["backup_file"])
 
 
+class TestMCPServerTools(unittest.TestCase):
+    """Tests for FastMCP server tools in agy_memory_mcp.py."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_mcp_store_and_normalize(self):
+        from agy_memory_mcp import store_memory, record_episode, record_learning, link_entities_mcp
+
+        # Test store_memory category normalization
+        res_fact = store_memory("fact.test", "Some test fact", category="infrastructure")
+        self.assertIn("category: infra", res_fact)
+
+        # Test record_episode status & topic normalization
+        res_ep = record_episode("ep.test", "stweg", "Condo meeting", "Discussed roof", status="monitoring")
+        self.assertIn("topic: home", res_ep)
+        self.assertIn("status: active", res_ep)
+
+        # Test record_learning category normalization
+        res_lrn = record_learning("lrn.test", "heuristics", "Check first")
+        self.assertIn("category: general", res_lrn)
+
+        # Test link_entities_mcp mapping & direction inversion (beelink hosts immich -> immich hosted_on beelink)
+        res_link = link_entities_mcp("infra.beelink", "service.immich", "hosts")
+        self.assertIn("'service.immich' --[hosted_on]--> 'infra.beelink'", res_link)
+
+        with schema.db_session(TEST_DB) as conn:
+            # Verify DB content directly
+            cat = conn.execute("SELECT category FROM memories WHERE id = 'fact.test'").fetchone()[0]
+            self.assertEqual(cat, "infra")
+            top, stat = conn.execute("SELECT topic, status FROM episodes WHERE id = 'ep.test'").fetchone()
+            self.assertEqual(top, "home")
+            self.assertEqual(stat, "active")
+            links = conn.execute("SELECT source_id, target_id, relation FROM entity_links").fetchall()
+            self.assertIn(("service.immich", "infra.beelink", "hosted_on"), links)
+
+    def test_mcp_migrate_and_optimize(self):
+        from agy_memory_mcp import migrate_memory, optimize_memory
+        # Setup legacy state
+        with schema.db_session(TEST_DB) as conn:
+            conn.execute("INSERT INTO memories (id, category, fact) VALUES ('m.srv', 'infrastructure', 'Server')")
+            conn.commit()
+
+        # Test migrate_memory tool dry run
+        res_dry = json.loads(migrate_memory(dry_run=True))
+        self.assertEqual(res_dry["status"], "dry_run_complete")
+        self.assertEqual(res_dry["facts_migrated"], 1)
+
+        # Test optimize_memory tool
+        res_opt = json.loads(optimize_memory(apply_changes=True, consolidate=False))
+        self.assertEqual(res_opt["status"], "success")
+
+
 if __name__ == "__main__":
     unittest.main()
 

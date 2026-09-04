@@ -118,6 +118,8 @@ The engine includes a native FastMCP server (`agy_memory_mcp.py`) that equips au
 | `record_learning` | Record a practical heuristic, tested rule of thumb, or stance (Layer 3) | `id`, `category`, `insight`, `context`, `keywords` |
 | `link_entities_mcp` | Create directional knowledge graph links between memory entities (Layer 4) | `source_id`, `target_id`, `relation` |
 | `list_memories` | Full multi-layer inventory export of all stored memories | — |
+| `migrate_memory` | Migrate database to canonical v2.1 taxonomies, map relations, prune orphans | `dry_run` *(bool, default: True)* |
+| `optimize_memory` | Rebuild FTS indexes, execute episode aging decay, prune links, and VACUUM | `apply_changes` *(bool, default: True)*, `consolidate` *(bool)* |
 
 ### MCP Configuration
 
@@ -276,7 +278,7 @@ Registers the sub-millisecond transcript collector on every agent turn stop:
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 46 tests in 1.8s (OK)
+# Ran 48 tests in 2.9s (OK)
 ```
 
 ---

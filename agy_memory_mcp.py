@@ -8,7 +8,20 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from schema import db_session
-from agy_memory import extract_multilingual_tokens, get_all_vocabulary
+from agy_memory import (
+    extract_multilingual_tokens,
+    get_all_vocabulary,
+    optimize_db,
+    CANONICAL_FACT_CATEGORIES,
+    CANONICAL_LEARNING_CATEGORIES,
+    CANONICAL_EPISODE_TOPICS,
+)
+from scripts.migrate_v2_to_v2_1 import (
+    normalize_category,
+    map_relation,
+    run_migration,
+    CANONICAL_EPISODE_STATUSES,
+)
 
 mcp = FastMCP("memory")
 
@@ -111,10 +124,11 @@ def store_memory(id: str, fact: str, category: str = "general", keywords: str = 
     Args:
         id: Unique identifier / key for this memory (e.g. 'infra.server.ip').
         fact: Fact content or description.
-        category: Category classification (default: general).
+        category: Category classification (normalized to canonical taxonomy: infra, hardware, software, contacts, family, health, fitness, finance, insurance, travel, home, media, music, work, dev, preferences, communication, cloud, security, general).
         keywords: Optional search keywords or synonyms.
     """
     try:
+        norm_category = normalize_category(category, CANONICAL_FACT_CATEGORIES)
         with db_session() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -125,9 +139,9 @@ def store_memory(id: str, fact: str, category: str = "general", keywords: str = 
                     fact = excluded.fact,
                     keywords = excluded.keywords,
                     updated_at = CURRENT_TIMESTAMP;
-            """, (id, category, fact, keywords))
+            """, (id.strip(), norm_category, fact.strip(), keywords.strip()))
             conn.commit()
-        return f"Successfully stored fact '{id}'"
+        return f"Successfully stored fact '{id}' (category: {norm_category})"
     except Exception as e:
         return f"Error storing memory: {e}"
 
@@ -136,17 +150,22 @@ def record_episode(id: str, topic: str, title: str, narrative: str, period: str 
     """Record or update a narrative chronicle, background story, relationship context, or ongoing topic dossier.
     
     Args:
-        id: Unique identifier (e.g. 'stweg.hoehenweg15.nachbarschaft', 'health.abbie.epilepsie').
-        topic: Topic domain (e.g. 'stweg', 'health', 'travel', 'finance', 'dev').
+        id: Unique identifier (e.g. 'home.sent.sanierung', 'health.abbie.epilepsie').
+        topic: Topic domain (normalized to canonical taxonomy: family, health, travel, finance, home, dev, infra, insurance, music, work, realestate, trading, general).
         title: Human-readable title of this chronicle.
         narrative: Rich multi-sentence narrative summary of history, events, and background context.
-        period: Time period (e.g. '2020 - laufend', 'Sommer 2024').
+        period: Time period (e.g. '2020 - laufend', 'Sommer 2026').
         status: Current status ('active', 'cooling', 'historic', 'resolved').
         entities: Involved people, organizations, or places.
         stance: User's stance, attitude, sentiments, or approach to this subject.
         keywords: Multilingual search terms and synonyms.
     """
     try:
+        norm_topic = normalize_category(topic, CANONICAL_EPISODE_TOPICS)
+        norm_status = status.strip().lower() if status else "active"
+        if norm_status not in CANONICAL_EPISODE_STATUSES:
+            norm_status = "active"
+
         with db_session() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -162,9 +181,9 @@ def record_episode(id: str, topic: str, title: str, narrative: str, period: str 
                     stance = excluded.stance,
                     keywords = excluded.keywords,
                     updated_at = CURRENT_TIMESTAMP;
-            """, (id, topic, title, period, status, narrative, entities, stance, keywords))
+            """, (id.strip(), norm_topic, title.strip(), period.strip(), norm_status, narrative.strip(), entities.strip(), stance.strip(), keywords.strip()))
             conn.commit()
-        return f"Successfully recorded narrative episode '{id}'"
+        return f"Successfully recorded narrative episode '{id}' (topic: {norm_topic}, status: {norm_status})"
     except Exception as e:
         return f"Error recording episode: {e}"
 
@@ -173,13 +192,14 @@ def record_learning(id: str, category: str, insight: str, context: str = "", key
     """Record a practical learning, rule of thumb, heuristic, or tested opinion.
     
     Args:
-        id: Unique key (e.g. 'travel.fewo_dog', 'coding.fastapi_patterns').
-        category: Category (e.g. 'travel', 'health', 'dev', 'finance').
+        id: Unique key (e.g. 'travel.fewo_dog', 'automation.systemd_decouple').
+        category: Category (normalized to canonical taxonomy: workflow, communication, finance, health, shopping, travel, hardware, safety, architecture, security, automation, general).
         insight: The lesson learned or heuristic.
         context: Context of how/when this was learned.
         keywords: Search terms and synonyms.
     """
     try:
+        norm_category = normalize_category(category, CANONICAL_LEARNING_CATEGORIES)
         with db_session() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -191,31 +211,36 @@ def record_learning(id: str, category: str, insight: str, context: str = "", key
                     context = excluded.context,
                     keywords = excluded.keywords,
                     updated_at = CURRENT_TIMESTAMP;
-            """, (id, category, insight, context, keywords))
+            """, (id.strip(), norm_category, insight.strip(), context.strip(), keywords.strip()))
             conn.commit()
-        return f"Successfully recorded learning '{id}'"
+        return f"Successfully recorded learning '{id}' (category: {norm_category})"
     except Exception as e:
         return f"Error recording learning: {e}"
 
 @mcp.tool()
 def link_entities_mcp(source_id: str, target_id: str, relation: str) -> str:
-    """Link two memory entities with a semantic relationship (e.g. 'infra.beelink' hosts 'service.immich').
+    """Link two memory entities with a canonical semantic relationship.
     
     Args:
-        source_id: Source ID (e.g. 'infra.beelink').
-        target_id: Target ID (e.g. 'service.immich').
-        relation: Relationship description (e.g. 'hosts', 'member_of', 'depends_on', 'owns').
+        source_id: Source ID (e.g. 'service.immich').
+        target_id: Target ID (e.g. 'infra.beelink').
+        relation: Canonical relation type (e.g. 'hosted_on', 'runs_on', 'depends_on', 'part_of', 'member_of', 'monitors', 'uses', 'stores', 'related_to').
+                  Legacy relations (e.g. 'hosts', 'runs_in') are automatically mapped and directionally inverted if needed.
     """
     try:
+        src = source_id.strip()
+        tgt = target_id.strip()
+        canonical_src, canonical_tgt, canonical_rel = map_relation(src, tgt, relation)
+
         with db_session() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO entity_links (source_id, target_id, relation)
                 VALUES (?, ?, ?)
                 ON CONFLICT(source_id, target_id, relation) DO NOTHING;
-            """, (source_id.strip(), target_id.strip(), relation.strip()))
+            """, (canonical_src, canonical_tgt, canonical_rel))
             conn.commit()
-        return f"Successfully linked '{source_id}' --[{relation}]--> '{target_id}'"
+        return f"Successfully linked '{canonical_src}' --[{canonical_rel}]--> '{canonical_tgt}'"
     except Exception as e:
         return f"Error linking entities: {e}"
 
@@ -251,6 +276,46 @@ def list_memories() -> str:
                 "learnings": learnings,
                 "entity_links": links
             }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+@mcp.tool()
+def migrate_memory(dry_run: bool = True) -> str:
+    """Migrate database to canonical v2.1 taxonomies, map relations, prune orphan links, and rebuild FTS indexes.
+    
+    Args:
+        dry_run: If True (default), simulates the migration and returns proposed changes without modifying the database.
+                 Set to False to apply the migration live.
+    """
+    try:
+        report = run_migration(dry_run=dry_run, verbose=False)
+        return json.dumps({
+            "status": "dry_run_complete" if dry_run else "migration_complete",
+            "backup_file": report["backup_file"],
+            "facts_migrated": report["facts_migrated"],
+            "episodes_migrated": report["episodes_migrated"],
+            "learnings_migrated": report["learnings_migrated"],
+            "links_mapped": report["links_mapped"],
+            "orphan_links_pruned": report["orphan_links_pruned"],
+            "details": report["details"]
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+@mcp.tool()
+def optimize_memory(apply_changes: bool = True, consolidate: bool = False) -> str:
+    """Run database optimization: episode aging decay, orphan link pruning, FTS index rebuild, and VACUUM.
+    
+    Args:
+        apply_changes: Whether to apply changes to disk (default: True).
+        consolidate: Run semantic LLM deduplication across facts (default: False).
+    """
+    try:
+        optimize_db(apply_changes=apply_changes, age_decay=True, consolidate=consolidate)
+        return json.dumps({
+            "status": "success",
+            "message": "Database optimization and FTS index rebuild completed successfully."
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
