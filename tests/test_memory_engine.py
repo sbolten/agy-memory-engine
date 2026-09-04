@@ -835,13 +835,13 @@ class TestMigrationV2ToV21(unittest.TestCase):
 
 
 try:
-    import mcp  # noqa: F401
-    HAS_MCP = True
-except ImportError:
-    HAS_MCP = False
+    from mcp.server.fastmcp import FastMCP  # noqa: F401
+    HAS_FASTMCP = True
+except (ImportError, ModuleNotFoundError):
+    HAS_FASTMCP = False
 
 
-@unittest.skipUnless(HAS_MCP, "mcp package not installed")
+@unittest.skipUnless(HAS_FASTMCP, "FastMCP (mcp<2) not installed")
 class TestMCPServerTools(unittest.TestCase):
     """Tests for FastMCP server tools in agy_memory_mcp.py."""
 
