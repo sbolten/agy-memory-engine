@@ -1594,6 +1594,10 @@ def main():
     ui_p.add_argument("--port", type=int, default=None, help="Port to listen on (default from .env)")
     ui_p.add_argument("--host", type=str, default=None, help="Host to bind to (default from .env)")
 
+    mg = subparsers.add_parser("migrate", help="Run database migrations (e.g. v2.0 -> v2.1)")
+    mg.add_argument("--dry-run", action="store_true", help="Simulate migration without modifying database")
+    mg.add_argument("--db", type=str, default=None, help="Path to SQLite database")
+
     args = parser.parse_args()
 
     if args.command == "prefetch":
@@ -1651,6 +1655,23 @@ def main():
         port = args.port or DASHBOARD_PORT
         host = args.host or DASHBOARD_HOST
         run_dashboard(host=host, port=port)
+    elif args.command == "migrate":
+        from scripts.migrate_v2_to_v2_1 import run_migration
+        db_target = args.db or DB_PATH
+        print(f"=== AGY Memory Engine: Migration v2.0 -> v2.1 ===")
+        print(f"Target Database: {db_target}")
+        print(f"Mode: {'DRY RUN (simulation only)' if args.dry_run else 'LIVE MIGRATION'}\n")
+        report = run_migration(db_path=db_target, dry_run=args.dry_run, verbose=True)
+        print("\n--- Migration Summary ---")
+        print(f"• Facts categories normalized:      {report['facts_migrated']}")
+        print(f"• Episodes topics/status normalized: {report['episodes_migrated']}")
+        print(f"• Learnings categories normalized:   {report['learnings_migrated']}")
+        print(f"• Entity links mapped to canonical:  {report['links_mapped']}")
+        print(f"• Orphan entity links pruned:        {report['orphan_links_pruned']}")
+        if not args.dry_run:
+            print(f"\n[MIGRATION COMPLETE] Successfully migrated to v2.1.0.")
+            if report["backup_file"]:
+                print(f"Safety backup retained at: {report['backup_file']}")
     else:
         parser.print_help()
 

@@ -750,6 +750,90 @@ class TestDashboardEndpoints(unittest.TestCase):
             self.assertEqual(remaining[0], ("fact.node_a", "fact.node_b"))
 
 
+class TestMigrationV2ToV21(unittest.TestCase):
+    """Tests for the v2.0 -> v2.1 migration script."""
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        schema._SCHEMA_INITIALIZED.discard(TEST_DB)
+
+    def test_migration_normalizes_and_maps_relations(self):
+        from scripts.migrate_v2_to_v2_1 import run_migration
+        with schema.db_session(TEST_DB) as conn:
+            # Fact with legacy category
+            conn.execute("INSERT INTO memories (id, category, fact) VALUES ('fact.infra.srv', 'infrastructure', 'Server info')")
+            # Learning with legacy category
+            conn.execute("INSERT INTO learnings (id, category, insight) VALUES ('lrn.sec', 'heuristics', 'Always test')")
+            # Episode with legacy topic and invalid status
+            conn.execute("INSERT INTO episodes (id, topic, title, narrative, status) VALUES ('ep.home', 'stweg', 'Title', 'Story', 'monitoring')")
+            # Entity nodes
+            conn.execute("INSERT INTO memories (id, category, fact) VALUES ('infra.beelink', 'infra', 'Beelink')")
+            conn.execute("INSERT INTO memories (id, category, fact) VALUES ('srv.immich', 'software', 'Immich')")
+            # Direct relation mapping: runs_in -> runs_on
+            conn.execute("INSERT INTO entity_links VALUES ('srv.immich', 'infra.beelink', 'runs_in')")
+            # Inverted relation mapping: hosts -> hosted_on (beelink hosts immich -> immich hosted_on beelink)
+            conn.execute("INSERT INTO entity_links VALUES ('infra.beelink', 'srv.immich', 'hosts')")
+            # Orphan relation: ghost node
+            conn.execute("INSERT INTO entity_links VALUES ('infra.beelink', 'ghost.service', 'depends_on')")
+            conn.commit()
+
+        # Run dry run
+        report_dry = run_migration(TEST_DB, dry_run=True, verbose=False)
+        self.assertEqual(report_dry["facts_migrated"], 1)
+        self.assertEqual(report_dry["learnings_migrated"], 1)
+        self.assertEqual(report_dry["episodes_migrated"], 1)
+        self.assertEqual(report_dry["links_mapped"], 2)
+        self.assertEqual(report_dry["orphan_links_pruned"], 1)
+
+        # Ensure DB was not modified during dry-run
+        with schema.db_session(TEST_DB) as conn:
+            cat = conn.execute("SELECT category FROM memories WHERE id = 'fact.infra.srv'").fetchone()[0]
+            self.assertEqual(cat, "infrastructure")
+
+        # Run live migration
+        report_live = run_migration(TEST_DB, dry_run=False, verbose=False)
+        self.assertEqual(report_live["facts_migrated"], 1)
+        self.assertIsNotNone(report_live["backup_file"])
+        self.assertTrue(os.path.exists(report_live["backup_file"]))
+
+        # Verify DB changes
+        with schema.db_session(TEST_DB) as conn:
+            # Fact category normalized
+            cat = conn.execute("SELECT category FROM memories WHERE id = 'fact.infra.srv'").fetchone()[0]
+            self.assertEqual(cat, "infra")
+
+            # Learning category normalized
+            lcat = conn.execute("SELECT category FROM learnings WHERE id = 'lrn.sec'").fetchone()[0]
+            self.assertEqual(lcat, "general")
+
+            # Episode topic & status normalized
+            topic, status = conn.execute("SELECT topic, status FROM episodes WHERE id = 'ep.home'").fetchone()
+            self.assertEqual(topic, "home")
+            self.assertEqual(status, "active")
+
+            # Links: orphan pruned, relations canonicalized
+            links = conn.execute("SELECT source_id, target_id, relation FROM entity_links").fetchall()
+            self.assertEqual(len(links), 2)
+            # runs_in -> runs_on
+            self.assertIn(("srv.immich", "infra.beelink", "runs_on"), links)
+            # hosts -> hosted_on (inverted direction: srv.immich hosted_on infra.beelink)
+            self.assertIn(("srv.immich", "infra.beelink", "hosted_on"), links)
+
+            # Check PRAGMA user_version
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            self.assertEqual(version, 210)
+
+        # Cleanup backup
+        if report_live["backup_file"] and os.path.exists(report_live["backup_file"]):
+            os.remove(report_live["backup_file"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

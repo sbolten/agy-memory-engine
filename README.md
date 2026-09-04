@@ -96,6 +96,10 @@ python3 agy_memory.py link --source "service.immich" --target "infra.beelink.ip"
 
 # Optimize & Decay Maintenance
 python3 agy_memory.py optimize --apply
+
+# Migrate Database from v2.0 to v2.1 (Taxonomies, Relations, Graph Pruning)
+python3 agy_memory.py migrate --dry-run
+python3 agy_memory.py migrate
 ```
 
 ---
@@ -272,7 +276,7 @@ Registers the sub-millisecond transcript collector on every agent turn stop:
 
 ```bash
 python3 -m unittest discover tests/ -v
-# Ran 44 tests in 1.5s (OK)
+# Ran 46 tests in 1.8s (OK)
 ```
 
 ---
@@ -288,6 +292,12 @@ python3 -m unittest discover tests/ -v
   - Category normalization enforcement during semantic LLM fact consolidation.
 - **Unified Maintenance & Web Dashboard**:
   - Full end-to-end integration of batch normalization and graph pruning into `optimize_db` (`compact`) CLI command and Web Dashboard `/api/optimize` endpoint.
+- **Automated Database Migration Tool (`v2.0 -> v2.1`)**:
+  - Dedicated CLI migration command `agy_memory.py migrate` and standalone runner `scripts/migrate_v2_to_v2_1.py`.
+  - Automatic safety snapshot backups in `~/.gemini/archive/` before applying modifications.
+  - Semantic relation remapping and directional inversion (e.g. `hosts` -> `hosted_on`, `monitored_by` -> `monitors`).
+  - Strict episode status normalization (`monitoring` -> `active`), topic mapping, and orphan link pruning.
+  - FTS5 virtual table rebuilds and database vacuuming with `PRAGMA user_version = 210`.
 
 ---
 
