@@ -834,6 +834,14 @@ class TestMigrationV2ToV21(unittest.TestCase):
             os.remove(report_live["backup_file"])
 
 
+try:
+    import mcp  # noqa: F401
+    HAS_MCP = True
+except ImportError:
+    HAS_MCP = False
+
+
+@unittest.skipUnless(HAS_MCP, "mcp package not installed")
 class TestMCPServerTools(unittest.TestCase):
     """Tests for FastMCP server tools in agy_memory_mcp.py."""
 
